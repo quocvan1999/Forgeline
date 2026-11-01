@@ -19,6 +19,10 @@ pub struct Store {
 }
 
 impl Store {
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     pub fn open(path: &Path) -> Result<Self, CoreError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -369,7 +373,7 @@ impl Store {
         tx.execute(
             "UPDATE sources SET
                 status = 'ready',
-                status_message = NULL,
+                status_message = ?12,
                 file_count = ?1,
                 symbol_count = ?2,
                 exact_call_count = ?3,
@@ -394,7 +398,8 @@ impl Store {
                 graph.removed_files,
                 graph.skipped_files,
                 now,
-                source_id
+                source_id,
+                graph.resolver_notice.as_deref()
             ],
         )?;
         tx.execute(

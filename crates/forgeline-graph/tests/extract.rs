@@ -244,10 +244,135 @@ fn edge_kind_names_round_trip() {
         EdgeKind::Contains,
         EdgeKind::Imports,
         EdgeKind::Calls,
+        EdgeKind::Inherits,
+        EdgeKind::TypeRef,
+        EdgeKind::ExternalModule,
         EdgeKind::CrossSourceApi,
         EdgeKind::SharesSchema,
         EdgeKind::ConfigRef,
     ] {
         assert_eq!(EdgeKind::parse(kind.as_str()), Some(kind));
     }
+}
+
+#[test]
+fn jsx_component_usage_and_reexport_are_exact() {
+    let graph = index(&[
+        (
+            "Button.tsx",
+            "export function Button() {\n  return <button />;\n}\n",
+        ),
+        (
+            "widgets.ts",
+            "export { Button } from \"./Button\";\n",
+        ),
+        (
+            "App.tsx",
+            "import { Button } from \"./widgets\";\nexport function App() {\n  return <Button />;\n}\n",
+        ),
+    ]);
+    let edge = call(&graph, "App", "Button").expect("jsx via re-export");
+    assert_eq!(edge.provenance, Provenance::Exact);
+    assert_eq!(edge.detail, "import");
+}
+
+#[test]
+fn tsconfig_paths_resolve_exact_import() {
+    let root = std::env::temp_dir().join(format!("forgeline-paths-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@lib/*": ["src/*"] } } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/math.ts"),
+        "export function add(a: number, b: number) { return a + b; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/main.ts"),
+        "import { add } from \"@lib/math\";\nexport function main() { add(1, 2); }\n",
+    )
+    .unwrap();
+    let graph = index_path(&root, "src", "paths", &[]).unwrap();
+    let edge = call(&graph, "main", "add").expect("path mapping");
+    assert_eq!(edge.detail, "import");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn external_npm_import_is_external_module_edge_not_guessed_call() {
+    let graph = index(&[(
+        "app.tsx",
+        "import React from \"react\";\nexport function App() { return React.createElement(\"div\"); }\n",
+    )]);
+    assert!(graph
+        .edges
+        .iter()
+        .any(|edge| edge.kind == EdgeKind::ExternalModule && edge.to_name == "react"));
+    // createElement on external React stays unresolved — never guessed.
+    assert!(graph.unresolved_calls >= 1);
+}
+
+#[test]
+fn roslyn_resolves_field_call_when_sdk_available() {
+    let root = std::env::temp_dir().join(format!("forgeline-roslyn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("Services")).unwrap();
+    std::fs::create_dir_all(root.join("Controllers")).unwrap();
+    std::fs::write(
+        root.join("Services/ItemService.cs"),
+        "namespace Api.Services;\npublic class ItemService {\n  public string Find(int id) { return id.ToString(); }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Controllers/ItemsController.cs"),
+        "using Api.Services;\nnamespace Api.Controllers;\npublic class ItemsController {\n  private readonly ItemService _service;\n  public ItemsController(ItemService service) { _service = service; }\n  public string Get(int id) { return _service.Find(id); }\n}\n",
+    )
+    .unwrap();
+    let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tools/forgeline-roslyn/bin/Release/net8.0/forgeline-roslyn.dll");
+    if helper.is_file() {
+        std::env::set_var("FORGELINE_ROSLYN", &helper);
+    }
+    let graph = index_path(&root, "api", "api", &[]).unwrap();
+    let edge = call(
+        &graph,
+        "Api.Controllers.ItemsController.Get",
+        "Api.Services.ItemService.Find",
+    )
+    .or_else(|| call(&graph, "ItemsController.Get", "ItemService.Find"));
+    if which_dotnet() && helper.is_file() {
+        assert!(
+            edge.is_some(),
+            "expected Roslyn exact edge for Find, notice={:?}, calls={:?}",
+            graph.resolver_notice,
+            graph
+                .call_edges()
+                .map(|edge| (
+                    graph
+                        .symbol(&edge.from_id)
+                        .map(|s| s.qualified_name.clone()),
+                    edge.to_name.clone(),
+                    edge.detail.clone()
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert!(edge.unwrap().detail.contains("roslyn"));
+    } else {
+        assert!(
+            graph.resolver_notice.is_some() || edge.is_none(),
+            "without SDK keep tree-sitter-only and prefer a notice"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn which_dotnet() -> bool {
+    std::env::var_os("DOTNET_ROOT").is_some()
+        || std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).any(|dir| dir.join("dotnet").is_file()))
+            .unwrap_or(false)
 }

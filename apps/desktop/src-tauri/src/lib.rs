@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use forgeline_core::{
-    index_source as run_index, Project, ProjectStats, Source, Store, KIND_GIT_URL, KIND_LOCAL_PATH,
+    index_source as run_index, OverviewGraph, Project, ProjectStats, Source, Store,
+    SymbolNeighbors, KIND_GIT_URL, KIND_LOCAL_PATH,
 };
 use tauri::{Manager, State};
 
@@ -85,6 +86,48 @@ fn project_stats(state: State<'_, AppState>, project_id: String) -> Result<Proje
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn source_overview(
+    state: State<'_, AppState>,
+    source_id: String,
+    focus: Option<String>,
+    kind_filter: Option<String>,
+    search: Option<String>,
+) -> Result<OverviewGraph, String> {
+    let store = lock(&state)?;
+    store
+        .source_overview(
+            &source_id,
+            focus.as_deref(),
+            kind_filter.as_deref(),
+            search.as_deref(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn export_source_overview(
+    state: State<'_, AppState>,
+    source_id: String,
+    focus: Option<String>,
+) -> Result<String, String> {
+    let store = lock(&state)?;
+    store
+        .export_source_overview_json(&source_id, focus.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn symbol_neighbors(
+    state: State<'_, AppState>,
+    symbol_id: String,
+) -> Result<SymbolNeighbors, String> {
+    let store = lock(&state)?;
+    store
+        .symbol_neighbors(&symbol_id)
+        .map_err(|error| error.to_string())
+}
+
 fn lock<'a>(state: &'a State<'a, AppState>) -> Result<std::sync::MutexGuard<'a, Store>, String> {
     state
         .store
@@ -113,7 +156,10 @@ pub fn run() {
             list_sources,
             add_source,
             index_source,
-            project_stats
+            project_stats,
+            source_overview,
+            export_source_overview,
+            symbol_neighbors
         ])
         .run(tauri::generate_context!())
         .expect("Forgeline window failed to start");

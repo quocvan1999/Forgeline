@@ -98,6 +98,12 @@ pub enum EdgeKind {
     Contains,
     Imports,
     Calls,
+    /// C# base type / interface implemented (Roslyn).
+    Inherits,
+    /// Exact type reference (field/param/property) resolved by Roslyn.
+    TypeRef,
+    /// Import of an external npm package (not guessed into a fake symbol).
+    ExternalModule,
     /// API client call to a backend route. Not emitted by the tree-sitter layer.
     CrossSourceApi,
     /// Shared model or schema across sources. Not emitted yet.
@@ -112,6 +118,9 @@ impl EdgeKind {
             Self::Contains => "contains",
             Self::Imports => "imports",
             Self::Calls => "calls",
+            Self::Inherits => "inherits",
+            Self::TypeRef => "type_ref",
+            Self::ExternalModule => "external_module",
             Self::CrossSourceApi => "cross_source_api",
             Self::SharesSchema => "shares_schema",
             Self::ConfigRef => "config_ref",
@@ -123,6 +132,9 @@ impl EdgeKind {
             "contains" => Self::Contains,
             "imports" => Self::Imports,
             "calls" => Self::Calls,
+            "inherits" => Self::Inherits,
+            "type_ref" => Self::TypeRef,
+            "external_module" => Self::ExternalModule,
             "cross_source_api" => Self::CrossSourceApi,
             "shares_schema" => Self::SharesSchema,
             "config_ref" => Self::ConfigRef,
@@ -211,6 +223,22 @@ pub struct Import {
     pub line: u32,
 }
 
+/// One export binding declared or re-exported by a JS/TS module.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Export {
+    /// Exported name (`default` for default export).
+    pub exported_name: String,
+    /// Local symbol name when the export points at a declaration in this file.
+    pub local_name: Option<String>,
+    /// `export … from "mod"` / `export * from "mod"` source.
+    pub from_specifier: Option<String>,
+    /// True for `export * from`.
+    #[serde(default)]
+    pub star: bool,
+    pub relative_path: String,
+    pub line: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallSite {
     pub caller_id: String,
@@ -269,6 +297,8 @@ pub struct ExtractedFile {
     pub imports: Vec<Import>,
     pub calls: Vec<CallSite>,
     #[serde(default)]
+    pub exports: Vec<Export>,
+    #[serde(default)]
     pub routes: Vec<RouteEndpoint>,
     #[serde(default)]
     pub http_calls: Vec<HttpCall>,
@@ -296,6 +326,8 @@ pub struct SourceGraph {
     pub reused_files: u32,
     pub removed_files: u32,
     pub skipped_files: u32,
+    /// Vietnamese notice when Roslyn could not run (missing SDK, timeout, …).
+    pub resolver_notice: Option<String>,
 }
 
 impl SourceGraph {

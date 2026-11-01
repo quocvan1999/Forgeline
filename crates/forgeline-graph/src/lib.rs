@@ -11,16 +11,19 @@ mod extract;
 mod hashutil;
 mod languages;
 mod model;
+mod modules;
 mod resolve;
+mod roslyn;
 mod scan;
 mod summarize;
 
 pub use error::GraphError;
 pub use hashutil::content_hash;
 pub use model::*;
-pub use scan::{index_contents, index_path, FileInput};
+pub use roslyn::RoslynStatus;
+pub use scan::{index_contents, index_contents_at, index_path, FileInput};
 
-pub const EXTRACTOR_VERSION: u32 = 2;
+pub const EXTRACTOR_VERSION: u32 = 3;
 
 /// Every stored edge is exact.
 pub const CONFIDENCE_EXACT: f64 = 1.0;

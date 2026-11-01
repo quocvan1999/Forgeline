@@ -32,22 +32,22 @@ Giao diện desktop (Tauri)  và  CLI
 forgeline-core          dự án, nguồn, SQLite, thư mục dữ liệu
         │
         ▼
-forgeline-graph         tree-sitter (C#, JS/TS/JSX/TSX; Python phụ), hash, cạnh exact, tóm tắt
+forgeline-graph         tree-sitter + JS/TS module resolution + merge Roslyn
         │
         ▼
-(sau này) lớp chính xác
-        Roslyn / SCIP cho C#
-        TypeScript compiler / scip-typescript cho JS/TS
+tools/forgeline-roslyn  SemanticModel (MSBuildWorkspace / AdHoc) → NDJSON exact
         │
         ▼
 (sau này) liên kết xuyên nguồn (API client → route, schema, config)
 ```
 
-Parser chỉ đọc cây cú pháp. Không import, không eval, không chạy mã đang phân tích.
+Parser tree-sitter chỉ đọc cây cú pháp. Không import, không eval, không chạy mã đang phân tích.
 
-Lớp tree-sitter cố ý từ chối đoán: `_service.Find()`, `client.get()` không có kiểu → unresolved, không thành cạnh. Precision sẽ tăng khi gắn Roslyn/SCIP và scip-typescript.
+**C#:** sau tree-sitter, Rust gọi `forgeline-roslyn` (subprocess, không shell, có timeout). Roslyn dùng `SemanticModel` để gắn invocation / object creation / member access / base type / DI parameter tới declaring symbol trong nguồn. Cạnh Roslyn = exact. Thiếu .NET SDK → giữ tree-sitter + thông báo tiếng Việt.
 
-Liên kết xuyên nguồn đã có kind dành sẵn (`cross_source_api`, `shares_schema`, `config_ref`) nhưng chưa phát sinh.
+**JS/TS/React:** phân giải module exact (relative, index, extensions, tsconfig paths/extends, package exports/main cục bộ), bind import/re-export, JSX component usage. npm ngoài → `external_module` hoặc unresolved.
+
+Liên kết xuyên nguồn đã có kind dành sẵn (`cross_source_api`, `shares_schema`, `config_ref`) nhưng chưa phát sinh. Desktop có view **Sơ đồ** (folder → file → symbol, chỉ exact).
 
 ## Thư mục dữ liệu
 

@@ -13,6 +13,7 @@ import {
   type ProjectStats,
   type Source,
 } from "./api";
+import { SourceGraphView } from "./SourceGraphView";
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "Chờ",
@@ -33,6 +34,7 @@ export function App() {
   const [sourceLocation, setSourceLocation] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [graphSource, setGraphSource] = useState<Source | null>(null);
 
   const selected = projects.find((project) => project.id === selectedId) ?? null;
 
@@ -229,6 +231,9 @@ export function App() {
             <section>
               <h2>Nguồn mã</h2>
               {sources.length === 0 ? <p className="empty">Chưa có nguồn. Thêm đường dẫn cục bộ hoặc URL git.</p> : null}
+              {graphSource ? (
+                <SourceGraphView source={graphSource} onClose={() => setGraphSource(null)} />
+              ) : null}
               {sources.map((source) => (
                 <article className="source" key={source.id}>
                   <div>
@@ -245,22 +250,35 @@ export function App() {
                       {source.fileCount} tệp · {source.symbolCount} ký hiệu · chính xác {source.exactCallCount} ·
                       chưa phân giải {source.unresolvedCallCount}
                     </p>
-                    {source.statusMessage ? <p className="error">{source.statusMessage}</p> : null}
+                    {source.statusMessage ? (
+                      <p className={source.status === "ready" ? "notice" : "error"}>
+                        {source.statusMessage}
+                      </p>
+                    ) : null}
                   </div>
-                  <button
-                    className="primary"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => {
-                      void run(async () => {
-                        await indexSource(source.id);
-                        await refreshDetail(selected.id);
-                        await refreshProjects(selected.id);
-                      });
-                    }}
-                  >
-                    Phân tích
-                  </button>
+                  <div className="source-actions">
+                    <button
+                      type="button"
+                      disabled={busy || source.status !== "ready"}
+                      onClick={() => setGraphSource(source)}
+                    >
+                      Sơ đồ
+                    </button>
+                    <button
+                      className="primary"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        void run(async () => {
+                          await indexSource(source.id);
+                          await refreshDetail(selected.id);
+                          await refreshProjects(selected.id);
+                        });
+                      }}
+                    >
+                      Phân tích
+                    </button>
+                  </div>
                 </article>
               ))}
               <form

@@ -2,7 +2,7 @@ use tree_sitter::Node;
 
 use crate::hashutil::content_hash;
 use crate::model::{
-    language_for_path, symbol_id, CallSite, ExtractedFile, HttpCall, Import, Language,
+    language_for_path, symbol_id, CallSite, Export, ExtractedFile, HttpCall, Import, Language,
     RouteEndpoint, Symbol, SymbolKind,
 };
 use crate::GraphError;
@@ -22,6 +22,7 @@ pub(crate) struct Ctx<'a> {
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
     pub calls: Vec<CallSite>,
+    pub exports: Vec<Export>,
     pub routes: Vec<RouteEndpoint>,
     pub http_calls: Vec<HttpCall>,
     pub stack: Vec<Frame>,
@@ -196,6 +197,27 @@ impl<'a> Ctx<'a> {
             line,
         });
     }
+
+    pub(crate) fn add_export(
+        &mut self,
+        exported_name: String,
+        local_name: Option<String>,
+        from_specifier: Option<String>,
+        star: bool,
+        line: u32,
+    ) {
+        if exported_name.is_empty() && !star {
+            return;
+        }
+        self.exports.push(Export {
+            exported_name,
+            local_name,
+            from_specifier,
+            star,
+            relative_path: self.relative_path.to_string(),
+            line,
+        });
+    }
 }
 
 pub(crate) fn extract_file(
@@ -221,6 +243,7 @@ pub(crate) fn extract_file(
         symbols: Vec::new(),
         imports: Vec::new(),
         calls: Vec::new(),
+        exports: Vec::new(),
         routes: Vec::new(),
         http_calls: Vec::new(),
         stack: Vec::new(),
@@ -256,6 +279,7 @@ pub(crate) fn extract_file(
         symbols: ctx.symbols,
         imports: ctx.imports,
         calls: ctx.calls,
+        exports: ctx.exports,
         routes: ctx.routes,
         http_calls: ctx.http_calls,
     })
@@ -296,6 +320,7 @@ fn empty_file(
         }],
         imports: Vec::new(),
         calls: Vec::new(),
+        exports: Vec::new(),
         routes: Vec::new(),
         http_calls: Vec::new(),
     }
