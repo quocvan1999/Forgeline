@@ -17,3 +17,4 @@ tauri-build = { version = "2", features = [] }
 forgeline-core = { path = "../../../crates/forgeline-core" }
 serde = { workspace = true }
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
