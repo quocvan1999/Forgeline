@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/forgeline-core",
+    "crates/forgeline-graph",
+    "crates/forgeline-cli",
+    "apps/desktop/src-tauri",
+]
+default-members = [
+    "crates/forgeline-core",
+    "crates/forgeline-graph",
+    "crates/forgeline-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+dunce = "1"
+hex = "0.4"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+directories = "6"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tree-sitter = "0.25.10"
+tree-sitter-python = "0.25.0"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-typescript = "0.23.2"
