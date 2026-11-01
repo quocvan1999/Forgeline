@@ -86,7 +86,7 @@ npm install
 npm run tauri build
 ```
 
-Cửa sổ cho phép tạo, đổi tên, xóa dự án; thêm nguồn cục bộ hoặc URL git; bấm Phân tích; xem số ký hiệu và lời gọi exact / inferred. Giao diện tiếng Việt. Tóm tắt cho agent tiếng Anh.
+Cửa sổ cho phép tạo, đổi tên, xóa dự án; thêm nguồn cục bộ bằng hộp thoại chọn thư mục của hệ điều hành, hoặc dán URL git; bấm Phân tích; xem số ký hiệu và lời gọi exact / inferred. Giao diện tiếng Việt. Tóm tắt cho agent tiếng Anh.
 
 Lần đầu biên dịch Rust của Tauri khá lâu. Trên Linux, nếu thiếu WebKitGTK, cài các gói ở mục yêu cầu rồi chạy lại.
 
