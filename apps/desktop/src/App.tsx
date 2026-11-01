@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
+import { FolderOpen, Layers } from "lucide-react";
 import {
   addSource,
   createProject,
@@ -13,21 +14,28 @@ import {
   type ProjectStats,
   type Source,
 } from "./api";
+import { AppShell } from "./components/shell/AppShell";
+import { TabKey } from "./components/shell/Toolbar";
+import { EmptyState } from "./components/controls/EmptyState";
+import { StatusBadge } from "./components/controls/StatusBadge";
+import { Button } from "./components/controls/Button";
 import { SourceGraphView } from "./SourceGraphView";
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: "Chờ",
-  indexing: "Đang phân tích",
-  ready: "Sẵn sàng",
-  error: "Lỗi",
-};
+import { usePaneWidths } from "./hooks/usePaneWidths";
+import { useTheme } from "./hooks/useTheme";
+import { useHotkeys } from "./hooks/useHotkeys";
 
 export function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [stats, setStats] = useState<ProjectStats | null>(null);
-  const [projectName, setProjectName] = useState("");
+  const [activeTab, setActiveTab] = useState<TabKey>("overview");
+
+  // Project creation state
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+
+  // Existing form states
   const [rename, setRename] = useState("");
   const [sourceName, setSourceName] = useState("");
   const [sourceKind, setSourceKind] = useState("local_path");
@@ -35,6 +43,22 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [graphSource, setGraphSource] = useState<Source | null>(null);
+
+  // Pane resizing and theme hooks
+  const {
+    sidebarWidth,
+    inspectorWidth,
+    isInspectorCollapsed,
+    isResizingSidebar,
+    isResizingInspector,
+    startSidebarResize,
+    startInspectorResize,
+    resetSidebarWidth,
+    resetInspectorWidth,
+    toggleInspector,
+  } = usePaneWidths();
+
+  const { setTheme, resolvedTheme } = useTheme();
 
   const selected = projects.find((project) => project.id === selectedId) ?? null;
 
@@ -78,6 +102,20 @@ export function App() {
     setRename(selected?.name ?? "");
   }, [selected?.id, selected?.name]);
 
+  // Global hotkeys
+  useHotkeys({
+    onTabOverview: () => selected && setActiveTab("overview"),
+    onTabGraph: () => selected && setActiveTab("graph"),
+    onTabSources: () => selected && setActiveTab("sources"),
+    onNewProject: () => setIsCreatingProject(true),
+    onEscape: () => {
+      if (isCreatingProject) {
+        setIsCreatingProject(false);
+        setNewProjectName("");
+      }
+    },
+  });
+
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setError(null);
@@ -88,6 +126,18 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleCreateProjectSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const name = newProjectName.trim();
+    if (!name) return;
+    await run(async () => {
+      const created = await createProject(name);
+      setNewProjectName("");
+      setIsCreatingProject(false);
+      await refreshProjects(created.id);
+    });
   }
 
   async function chooseLocalFolder() {
@@ -111,260 +161,352 @@ export function App() {
     }
   }
 
+  const isInspectorOpen = activeTab === "graph" && !isInspectorCollapsed;
+
+  const toggleThemeMode = () => {
+    setTheme(resolvedTheme === "dark" ? "light" : "dark");
+  };
+
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <strong>Forgeline</strong>
-          <span>Đồ thị mã cục bộ</span>
-        </div>
-        <form
-          className="stack"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const name = projectName.trim();
-            if (!name) {
-              return;
-            }
-            void run(async () => {
-              const created = await createProject(name);
-              setProjectName("");
-              await refreshProjects(created.id);
-            });
-          }}
-        >
-          <input
-            aria-label="Tên dự án"
-            placeholder="Tên dự án mới"
-            value={projectName}
-            onChange={(event) => setProjectName(event.target.value)}
-          />
-          <button className="primary" type="submit" disabled={busy || projectName.trim() === ""}>
-            Tạo dự án
-          </button>
-        </form>
-        <div className="project-list">
-          {projects.length === 0 ? <p className="empty">Chưa có dự án.</p> : null}
-          {projects.map((project) => (
-            <button
-              key={project.id}
-              type="button"
-              className={project.id === selectedId ? "active" : ""}
-              onClick={() => setSelectedId(project.id)}
-            >
-              {project.name}
-            </button>
-          ))}
-        </div>
-        <p className="security">Dữ liệu chỉ nằm trên máy này. Không telemetry, không tự cài thêm công cụ.</p>
-      </aside>
-      <main className="main">
-        {error ? <p className="error">{error}</p> : null}
-        {!selected || !stats ? (
-          <p className="empty">Chọn hoặc tạo một dự án. Mỗi dự án là một cuộc làm việc và có thể gắn nhiều nguồn mã.</p>
-        ) : (
+    <AppShell
+      sidebarWidth={sidebarWidth}
+      isResizingSidebar={isResizingSidebar}
+      onStartSidebarResize={startSidebarResize}
+      onResetSidebarWidth={resetSidebarWidth}
+      sidebarProps={{
+        projects,
+        selectedProjectId: selectedId,
+        onSelectProject: (id) => setSelectedId(id),
+        onCreateProjectClick: () => setIsCreatingProject(true),
+        children: (
           <>
-            <header className="header">
-              <div>
-                <h1>{selected.name}</h1>
-                <p className="muted">Một cuộc hội thoại, nhiều repo.</p>
-              </div>
+            {isCreatingProject && (
               <form
-                className="row"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const name = rename.trim();
-                  if (!name || name === selected.name) {
-                    return;
-                  }
-                  void run(async () => {
-                    await renameProject(selected.id, name);
-                    await refreshProjects(selected.id);
-                  });
+                onSubmit={handleCreateProjectSubmit}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "var(--space-1)",
+                  padding: "var(--space-1) 0",
+                  marginBottom: "var(--space-2)",
                 }}
               >
                 <input
-                  aria-label="Đổi tên dự án"
-                  value={rename}
-                  onChange={(event) => setRename(event.target.value)}
+                  autoFocus
+                  aria-label="Tên dự án mới"
+                  placeholder="Tên dự án mới"
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  style={{
+                    height: "28px",
+                    padding: "0 8px",
+                    borderRadius: "var(--radius-sm)",
+                    border: "1px solid var(--accent)",
+                    backgroundColor: "var(--bg-control)",
+                    color: "var(--label)",
+                    fontSize: "var(--text-body)",
+                    outline: "none",
+                  }}
                 />
-                <button type="submit" disabled={busy}>
-                  Đổi tên
-                </button>
-                <button
-                  type="button"
-                  className="danger"
-                  disabled={busy}
-                  onClick={() => {
-                    if (!window.confirm(`Xóa dự án “${selected.name}”?`)) {
-                      return;
-                    }
+                <div style={{ display: "flex", gap: "var(--space-1)", justifyContent: "flex-end" }}>
+                  <Button
+                    size="compact"
+                    variant="secondary"
+                    type="button"
+                    onClick={() => {
+                      setIsCreatingProject(false);
+                      setNewProjectName("");
+                    }}
+                  >
+                    Hủy
+                  </Button>
+                  <Button
+                    size="compact"
+                    variant="primary"
+                    type="submit"
+                    disabled={busy || newProjectName.trim() === ""}
+                  >
+                    Tạo
+                  </Button>
+                </div>
+              </form>
+            )}
+          </>
+        ),
+      }}
+      inspectorWidth={inspectorWidth}
+      isResizingInspector={isResizingInspector}
+      isInspectorOpen={isInspectorOpen}
+      onStartInspectorResize={startInspectorResize}
+      onResetInspectorWidth={resetInspectorWidth}
+      onCloseInspector={toggleInspector}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      projectTitle={selected?.name ?? null}
+      hasProjectSelected={selected !== null}
+      toolbarProps={{
+        theme: resolvedTheme,
+        onToggleTheme: toggleThemeMode,
+      }}
+    >
+      {error && (
+        <div
+          role="alert"
+          style={{
+            padding: "var(--space-2) var(--space-3)",
+            marginBottom: "var(--space-3)",
+            backgroundColor: "color-mix(in srgb, var(--system-red) 12%, transparent)",
+            border: "1px solid var(--system-red)",
+            borderRadius: "var(--radius-sm)",
+            color: "var(--system-red)",
+            fontSize: "var(--text-body)",
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {/* When no project selected or no projects at all */}
+      {!selected ? (
+        projects.length === 0 ? (
+          <EmptyState
+            icon={<FolderOpen size={44} />}
+            title="Chưa có dự án"
+            body="Tạo dự án để gắn nguồn mã và xem sơ đồ liên kết chính xác."
+            actionLabel="Tạo dự án"
+            onAction={() => setIsCreatingProject(true)}
+          />
+        ) : (
+          <EmptyState
+            icon={<Layers size={44} />}
+            title="Chọn một dự án"
+            body="Chọn dự án ở thanh bên, hoặc tạo dự án mới."
+            actionLabel="Tạo dự án"
+            onAction={() => setIsCreatingProject(true)}
+          />
+        )
+      ) : (
+        /* Selected Project Content by Tab */
+        <>
+          {activeTab === "overview" && (
+            <div>
+              <header className="header" style={{ marginBottom: "var(--space-4)" }}>
+                <div>
+                  <h2 style={{ fontSize: "var(--text-title1)", margin: 0 }}>{selected.name}</h2>
+                  <p style={{ color: "var(--secondary-label)", fontSize: "var(--text-callout)", marginTop: "var(--space-1)" }}>
+                    Một cuộc hội thoại, nhiều repo.
+                  </p>
+                </div>
+                <form
+                  className="row"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const name = rename.trim();
+                    if (!name || name === selected.name) return;
                     void run(async () => {
-                      await deleteProject(selected.id);
-                      await refreshProjects();
+                      await renameProject(selected.id, name);
+                      await refreshProjects(selected.id);
                     });
                   }}
                 >
-                  Xóa
-                </button>
-              </form>
-            </header>
-            <section className="cards">
-              <article className="card">
-                <span className="muted">Nguồn</span>
-                <b>{stats.sourceCount}</b>
-              </article>
-              <article className="card">
-                <span className="muted">Ký hiệu</span>
-                <b>{stats.symbolCount}</b>
-              </article>
-              <article className="card">
-                <span className="muted">Lời gọi chính xác</span>
-                <b>{stats.exactCallCount}</b>
-              </article>
-              <article className="card">
-                <span className="muted">Chưa phân giải</span>
-                <b>{stats.unresolvedCallCount}</b>
-              </article>
-            </section>
-            <pre className="summary">{stats.summary.trim()}</pre>
-            <section>
-              <h2>Nguồn mã</h2>
-              {sources.length === 0 ? <p className="empty">Chưa có nguồn. Thêm đường dẫn cục bộ hoặc URL git.</p> : null}
-              {graphSource ? (
-                <SourceGraphView source={graphSource} onClose={() => setGraphSource(null)} />
-              ) : null}
-              {sources.map((source) => (
-                <article className="source" key={source.id}>
-                  <div>
-                    <h2>
-                      {source.name}
-                      <span className={`badge ${source.status}`}>
-                        {STATUS_LABEL[source.status] ?? source.status}
-                      </span>
-                    </h2>
-                    <p>
-                      {source.kind === "git_url" ? "Git" : "Cục bộ"} · {source.location}
-                    </p>
-                    <p>
-                      {source.fileCount} tệp · {source.symbolCount} ký hiệu · chính xác {source.exactCallCount} ·
-                      chưa phân giải {source.unresolvedCallCount}
-                    </p>
-                    {source.statusMessage ? (
-                      <p className={source.status === "ready" ? "notice" : "error"}>
-                        {source.statusMessage}
-                      </p>
+                  <input
+                    aria-label="Đổi tên dự án"
+                    value={rename}
+                    onChange={(event) => setRename(event.target.value)}
+                  />
+                  <button type="submit" disabled={busy}>
+                    Đổi tên
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    disabled={busy}
+                    onClick={() => {
+                      if (!window.confirm(`Xóa dự án “${selected.name}”?`)) return;
+                      void run(async () => {
+                        await deleteProject(selected.id);
+                        await refreshProjects();
+                      });
+                    }}
+                  >
+                    Xóa
+                  </button>
+                </form>
+              </header>
+
+              {stats && (
+                <>
+                  <section className="cards">
+                    <article className="card">
+                      <span className="muted">Nguồn</span>
+                      <b>{stats.sourceCount}</b>
+                    </article>
+                    <article className="card">
+                      <span className="muted">Ký hiệu</span>
+                      <b>{stats.symbolCount}</b>
+                    </article>
+                    <article className="card">
+                      <span className="muted">Liên kết chính xác</span>
+                      <b>{stats.exactCallCount}</b>
+                    </article>
+                    <article className="card">
+                      <span className="muted">Chưa xác định</span>
+                      <b>{stats.unresolvedCallCount}</b>
+                    </article>
+                  </section>
+                  <pre className="summary">{stats.summary.trim()}</pre>
+                </>
+              )}
+            </div>
+          )}
+
+          {activeTab === "graph" && (
+            <div style={{ height: "100%", minHeight: "500px" }}>
+              {graphSource || sources[0] ? (
+                <SourceGraphView
+                  source={graphSource || sources[0]}
+                  onClose={() => setGraphSource(null)}
+                />
+              ) : (
+                <EmptyState
+                  icon={<Layers size={44} />}
+                  title="Chưa có sơ đồ"
+                  body="Phân tích nguồn ở trạng thái Sẵn sàng rồi mở tab Sơ đồ."
+                  actionLabel="Đến Nguồn"
+                  onAction={() => setActiveTab("sources")}
+                />
+              )}
+            </div>
+          )}
+
+          {activeTab === "sources" && (
+            <div>
+              <section>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)" }}>
+                  <h2 style={{ fontSize: "var(--text-title2)", margin: 0 }}>Nguồn mã</h2>
+                </div>
+
+                <form
+                  className="stack"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const name = sourceName.trim();
+                    const location = sourceLocation.trim();
+                    if (!name || !location) return;
+                    void run(async () => {
+                      await addSource(selected.id, name, sourceKind, location);
+                      setSourceName("");
+                      setSourceLocation("");
+                      await refreshDetail(selected.id);
+                    });
+                  }}
+                  style={{ marginBottom: "var(--space-4)" }}
+                >
+                  <div className="row">
+                    <select
+                      aria-label="Loại nguồn"
+                      value={sourceKind}
+                      onChange={(event) => setSourceKind(event.target.value)}
+                    >
+                      <option value="local_path">Thư mục cục bộ</option>
+                      <option value="git_url">URL git</option>
+                    </select>
+                    {sourceKind === "local_path" ? (
+                      <button type="button" onClick={() => void chooseLocalFolder()} disabled={busy}>
+                        Chọn thư mục…
+                      </button>
                     ) : null}
                   </div>
-                  <div className="source-actions">
-                    <button
-                      type="button"
-                      disabled={busy || source.status !== "ready"}
-                      onClick={() => setGraphSource(source)}
-                    >
-                      Sơ đồ
-                    </button>
-                    <button
-                      className="primary"
-                      type="button"
-                      disabled={busy}
-                      onClick={() => {
-                        void run(async () => {
-                          await indexSource(source.id);
-                          await refreshDetail(selected.id);
-                          await refreshProjects(selected.id);
-                        });
-                      }}
-                    >
-                      Phân tích
-                    </button>
-                  </div>
-                </article>
-              ))}
-              <form
-                className="form inline"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const name = sourceName.trim();
-                  const location = sourceLocation.trim();
-                  if (!name || !location) {
-                    return;
-                  }
-                  void run(async () => {
-                    await addSource(selected.id, name, sourceKind, location);
-                    setSourceName("");
-                    setSourceLocation("");
-                    await refreshDetail(selected.id);
-                  });
-                }}
-              >
-                <input
-                  aria-label="Tên nguồn"
-                  placeholder="Tên nguồn"
-                  value={sourceName}
-                  onChange={(event) => setSourceName(event.target.value)}
-                />
-                <select
-                  aria-label="Loại nguồn"
-                  value={sourceKind}
-                  onChange={(event) => {
-                    const next = event.target.value;
-                    setSourceKind(next);
-                    if (next === "local_path") {
-                      setSourceLocation("");
-                    }
-                  }}
-                >
-                  <option value="local_path">Đường dẫn cục bộ</option>
-                  <option value="git_url">URL git</option>
-                </select>
-                {sourceKind === "local_path" ? (
-                  <div className="path-picker">
-                    <input
-                      aria-label="Thư mục nguồn"
-                      placeholder="Chưa chọn thư mục"
-                      value={sourceLocation}
-                      readOnly
-                      onClick={() => {
-                        void chooseLocalFolder();
-                      }}
-                    />
-                    <button type="button" disabled={busy} onClick={() => void chooseLocalFolder()}>
-                      Chọn thư mục
-                    </button>
-                  </div>
-                ) : (
                   <input
-                    aria-label="URL git"
-                    placeholder="https://github.com/org/repo.git"
+                    aria-label="Đường dẫn hoặc URL"
+                    placeholder={sourceKind === "git_url" ? "https://github.com/org/repo.git" : "Đường dẫn thư mục"}
                     value={sourceLocation}
-                    onChange={(event) => setSourceLocation(event.target.value)}
+                    onChange={(event) => {
+                      const nextLocation = event.target.value;
+                      setSourceLocation(nextLocation);
+                      if (sourceName.trim() === "" && nextLocation.trim() !== "") {
+                        setSourceName(folderName(nextLocation));
+                      }
+                    }}
                   />
-                )}
-                <button type="submit" disabled={busy || sourceName.trim() === "" || sourceLocation.trim() === ""}>
-                  Thêm nguồn
-                </button>
-              </form>
-            </section>
-          </>
-        )}
-      </main>
-    </div>
+                  <input
+                    aria-label="Tên nguồn"
+                    placeholder="Tên nguồn (vd. backend, web)"
+                    value={sourceName}
+                    onChange={(event) => setSourceName(event.target.value)}
+                  />
+                  <button className="primary" type="submit" disabled={busy || sourceName.trim() === "" || sourceLocation.trim() === ""}>
+                    Thêm nguồn
+                  </button>
+                </form>
+
+                {sources.length === 0 ? (
+                  <p className="empty">Chưa có nguồn. Thêm đường dẫn cục bộ hoặc URL git.</p>
+                ) : null}
+
+                {sources.map((source) => (
+                  <article className="source" key={source.id} style={{ marginBottom: "var(--space-2)" }}>
+                    <div>
+                      <h2>
+                        {source.name}
+                        <StatusBadge status={source.status} />
+                      </h2>
+                      <p>
+                        {source.kind === "git_url" ? "Git" : "Cục bộ"} · {source.location}
+                      </p>
+                      <p>
+                        {source.fileCount} tệp · {source.symbolCount} ký hiệu · chính xác {source.exactCallCount} · chưa xác định {source.unresolvedCallCount}
+                      </p>
+                      {source.statusMessage ? <p className="error">{source.statusMessage}</p> : null}
+                    </div>
+                    <div className="row">
+                      <button
+                        type="button"
+                        disabled={busy || source.status === "indexing"}
+                        onClick={() => {
+                          setGraphSource(source);
+                          setActiveTab("graph");
+                        }}
+                      >
+                        Sơ đồ
+                      </button>
+                      <button
+                        className="primary"
+                        type="button"
+                        disabled={busy || source.status === "indexing"}
+                        onClick={() => {
+                          void run(async () => {
+                            await indexSource(source.id);
+                            await refreshDetail(selected.id);
+                          });
+                        }}
+                      >
+                        Phân tích
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </section>
+            </div>
+          )}
+        </>
+      )}
+    </AppShell>
   );
 }
 
-function folderName(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, "");
-  const parts = trimmed.split(/[\\/]/).filter((part) => part.length > 0);
-  return parts[parts.length - 1] ?? "source";
-}
-
 function messageOf(reason: unknown): string {
-  if (typeof reason === "string") {
-    return reason;
-  }
   if (reason instanceof Error) {
     return reason.message;
   }
+  if (typeof reason === "string") {
+    return reason;
+  }
   return "Không thực hiện được.";
+}
+
+function folderName(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, "");
+  const segments = normalized.split(/[\\/]/);
+  return segments[segments.length - 1] ?? "";
 }

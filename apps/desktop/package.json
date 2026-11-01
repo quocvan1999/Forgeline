@@ -14,6 +14,7 @@
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "graphology": "^0.26.0",
     "graphology-layout-forceatlas2": "^0.10.1",
+    "lucide-react": "^1.52.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "sigma": "^4.0.4"
