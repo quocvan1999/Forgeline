@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Instructions for AI coding agents (Cursor, Antigravity, Grok Bot) working on this repository. Read this before changing code. Prefer `README.md`, `docs/architecture.md`, and `docs/roadmap.md` for detail.
+Instructions for AI coding agents (Cursor, Antigravity, Grok Bot) working on this repository. Read this before changing code. Prefer `README.md`, `docs/architecture.md`, `docs/design.md`, and `docs/roadmap.md` for detail.
 
 ## Project summary
 
@@ -69,6 +69,7 @@ cargo run -p forgeline-cli -- overview sample --project sample --db .forgeline/f
 - Branch names: `cursor/...`, `antigravity/...`, or the agent’s own prefix. Keep PRs small and targeted at `main`.
 - Rebase onto latest `main` before opening/updating a PR. Never force-push `main`.
 - One agent per area at a time (avoid parallel edits to the same crate/feature).
+- UI work must follow `docs/design.md`.
 - PR description: what you touched, why, and how you verified. No `Co-authored-by` trailers.
 - Commits authored only by the repo owner’s GitHub identity or the agent’s own identity.
 
