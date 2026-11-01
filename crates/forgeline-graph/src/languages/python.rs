@@ -67,7 +67,7 @@ fn record_call(node: Node<'_>, ctx: &mut Ctx<'_>) {
     };
     if let Some((receiver, callee)) = callee_parts(func, ctx.source) {
         let line = line_number(node.start_position().row);
-        ctx.add_call(receiver, callee, line);
+        ctx.add_call(receiver, callee, line, None);
     }
 }
 

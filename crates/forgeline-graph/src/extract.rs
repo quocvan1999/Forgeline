@@ -2,7 +2,8 @@ use tree_sitter::Node;
 
 use crate::hashutil::content_hash;
 use crate::model::{
-    language_for_path, symbol_id, CallSite, ExtractedFile, Import, Language, Symbol, SymbolKind,
+    language_for_path, symbol_id, CallSite, ExtractedFile, HttpCall, Import, Language,
+    RouteEndpoint, Symbol, SymbolKind,
 };
 use crate::GraphError;
 use crate::EXTRACTOR_VERSION;
@@ -21,7 +22,11 @@ pub(crate) struct Ctx<'a> {
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
     pub calls: Vec<CallSite>,
+    pub routes: Vec<RouteEndpoint>,
+    pub http_calls: Vec<HttpCall>,
     pub stack: Vec<Frame>,
+    /// ASP.NET `[Route("...")]` on the enclosing type, applied to method routes.
+    pub route_prefix: Option<String>,
 }
 
 impl<'a> Ctx<'a> {
@@ -69,12 +74,20 @@ impl<'a> Ctx<'a> {
         self.stack
             .iter()
             .rev()
-            .find(|frame| matches!(frame.kind, SymbolKind::Function | SymbolKind::Method))
+            .find(|frame| {
+                matches!(
+                    frame.kind,
+                    SymbolKind::Function
+                        | SymbolKind::Method
+                        | SymbolKind::Constructor
+                        | SymbolKind::Component
+                )
+            })
             .or_else(|| {
                 self.stack
                     .iter()
                     .rev()
-                    .find(|frame| frame.kind == SymbolKind::Class)
+                    .find(|frame| frame.kind.is_type_scope())
             })
             .or_else(|| self.stack.last())
             .map(|frame| frame.id.clone())
@@ -88,7 +101,12 @@ impl<'a> Ctx<'a> {
             .find(|frame| {
                 matches!(
                     frame.kind,
-                    SymbolKind::Function | SymbolKind::Method | SymbolKind::Module
+                    SymbolKind::Function
+                        | SymbolKind::Method
+                        | SymbolKind::Constructor
+                        | SymbolKind::Component
+                        | SymbolKind::Module
+                        | SymbolKind::Namespace
                 )
             })
             .map(|frame| frame.id.clone())
@@ -115,7 +133,13 @@ impl<'a> Ctx<'a> {
         });
     }
 
-    pub(crate) fn add_call(&mut self, receiver: Option<String>, callee_name: String, line: u32) {
+    pub(crate) fn add_call(
+        &mut self,
+        receiver: Option<String>,
+        callee_name: String,
+        line: u32,
+        literal_arg: Option<String>,
+    ) {
         if !is_simple_name(&callee_name) {
             return;
         }
@@ -131,6 +155,43 @@ impl<'a> Ctx<'a> {
             caller_id: self.caller_id(),
             callee_name,
             receiver,
+            relative_path: self.relative_path.to_string(),
+            line,
+            literal_arg,
+        });
+    }
+
+    pub(crate) fn add_route(
+        &mut self,
+        symbol_id: String,
+        http_methods: Vec<String>,
+        template: String,
+        line: u32,
+    ) {
+        self.routes.push(RouteEndpoint {
+            symbol_id,
+            http_methods,
+            template,
+            relative_path: self.relative_path.to_string(),
+            line,
+        });
+    }
+
+    pub(crate) fn add_http_call(
+        &mut self,
+        client: String,
+        method: Option<String>,
+        url_literal: String,
+        line: u32,
+    ) {
+        if url_literal.is_empty() {
+            return;
+        }
+        self.http_calls.push(HttpCall {
+            caller_id: self.caller_id(),
+            client,
+            method,
+            url_literal,
             relative_path: self.relative_path.to_string(),
             line,
         });
@@ -160,7 +221,10 @@ pub(crate) fn extract_file(
         symbols: Vec::new(),
         imports: Vec::new(),
         calls: Vec::new(),
+        routes: Vec::new(),
+        http_calls: Vec::new(),
         stack: Vec::new(),
+        route_prefix: None,
     };
     let root = tree.root_node();
     let module_name = relative_path.replace('\\', "/");
@@ -177,6 +241,7 @@ pub(crate) fn extract_file(
         qualified_name: String::new(),
     });
     match language {
+        Language::CSharp => languages_walk_csharp(root, &mut ctx),
         Language::Python => languages_walk_python(root, &mut ctx),
         Language::JavaScript | Language::TypeScript | Language::Tsx => {
             languages_walk_ecma(root, &mut ctx);
@@ -191,6 +256,8 @@ pub(crate) fn extract_file(
         symbols: ctx.symbols,
         imports: ctx.imports,
         calls: ctx.calls,
+        routes: ctx.routes,
+        http_calls: ctx.http_calls,
     })
 }
 
@@ -229,6 +296,8 @@ fn empty_file(
         }],
         imports: Vec::new(),
         calls: Vec::new(),
+        routes: Vec::new(),
+        http_calls: Vec::new(),
     }
 }
 
@@ -258,11 +327,16 @@ pub(crate) fn line_number(row: usize) -> u32 {
 
 fn grammar(language: Language) -> Result<tree_sitter::Language, GraphError> {
     Ok(match language {
+        Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
         Language::Python => tree_sitter_python::LANGUAGE.into(),
         Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
         Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
     })
+}
+
+fn languages_walk_csharp(node: tree_sitter::Node<'_>, ctx: &mut Ctx<'_>) {
+    crate::languages::csharp::walk(node, ctx);
 }
 
 fn languages_walk_python(node: tree_sitter::Node<'_>, ctx: &mut Ctx<'_>) {
@@ -292,7 +366,7 @@ pub(crate) fn push_scope(ctx: &mut Ctx<'_>, name: &str, kind: SymbolKind, node: 
             parent.id.clone(),
         )
     };
-    let qualified_name = if parent_kind == SymbolKind::Module {
+    let qualified_name = if parent_kind == SymbolKind::Module || parent_qualified.is_empty() {
         name.to_string()
     } else {
         format!("{parent_qualified}.{name}")
@@ -316,13 +390,23 @@ pub(crate) fn pop_scope(ctx: &mut Ctx<'_>) {
 }
 
 pub(crate) fn nested_kind(ctx: &Ctx<'_>, declared: SymbolKind) -> SymbolKind {
-    if declared == SymbolKind::Class {
-        return SymbolKind::Class;
+    if matches!(
+        declared,
+        SymbolKind::Class
+            | SymbolKind::Interface
+            | SymbolKind::Record
+            | SymbolKind::Struct
+            | SymbolKind::Namespace
+            | SymbolKind::Component
+            | SymbolKind::Property
+            | SymbolKind::Constructor
+    ) {
+        return declared;
     }
     if ctx
         .stack
         .last()
-        .is_some_and(|frame| frame.kind == SymbolKind::Class)
+        .is_some_and(|frame| frame.kind.is_type_scope())
     {
         SymbolKind::Method
     } else {
@@ -374,8 +458,55 @@ pub(crate) fn callee_parts(func: Node<'_>, source: &str) -> Option<(Option<Strin
                 .map(|object| node_text(object, source));
             Some((receiver, name))
         }
+        "member_access_expression" => {
+            let name_node = func.child_by_field_name("name")?;
+            let name = node_text(name_node, source);
+            let receiver = func
+                .child_by_field_name("expression")
+                .map(|object| node_text(object, source));
+            Some((receiver, name))
+        }
+        "generic_name" => {
+            let ident = first_named_child(func, "identifier")?;
+            Some((None, node_text(ident, source)))
+        }
         _ => None,
     }
+}
+
+pub(crate) fn first_named_child<'t>(node: Node<'t>, kind: &str) -> Option<Node<'t>> {
+    let mut cursor = node.walk();
+    let found = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == kind);
+    found
+}
+
+pub(crate) fn first_string_literal(node: Node<'_>, source: &str) -> Option<String> {
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if matches!(
+            current.kind(),
+            "string" | "string_literal" | "verbatim_string_literal"
+        ) {
+            let text = unquote(&node_text(current, source));
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+        let mut cursor = current.walk();
+        for child in current.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    None
+}
+
+/// PascalCase React component heuristic: starts with uppercase ASCII letter.
+pub(crate) fn looks_like_component(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
 pub(crate) fn node_text(node: Node<'_>, source: &str) -> String {

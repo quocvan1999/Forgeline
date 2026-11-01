@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use crate::extract::{
-    callee_parts, is_function_node, line_number, node_text, pop_scope, push_scope, unquote,
-    walk_children, Ctx,
+    callee_parts, first_string_literal, is_function_node, line_number, looks_like_component,
+    node_text, pop_scope, push_scope, unquote, walk_children, Ctx,
 };
 use crate::model::SymbolKind;
 
@@ -36,7 +36,7 @@ fn define_function(node: Node<'_>, ctx: &mut Ctx<'_>) {
         walk_children(node, ctx, walk);
         return;
     };
-    let kind = crate::extract::nested_kind(ctx, SymbolKind::Function);
+    let kind = component_or_nested(ctx, &name, returns_jsx(node));
     push_scope(ctx, &name, kind, node);
     if let Some(parameters) = node.child_by_field_name("parameters") {
         walk(parameters, ctx);
@@ -57,7 +57,12 @@ fn define_class(node: Node<'_>, ctx: &mut Ctx<'_>) {
         walk_children(node, ctx, walk);
         return;
     }
-    push_scope(ctx, &name, SymbolKind::Class, node);
+    let kind = if looks_like_component(&name) {
+        SymbolKind::Component
+    } else {
+        SymbolKind::Class
+    };
+    push_scope(ctx, &name, kind, node);
     if let Some(body) = node.child_by_field_name("body") {
         walk(body, ctx);
     }
@@ -75,7 +80,7 @@ fn define_variable(node: Node<'_>, ctx: &mut Ctx<'_>) {
     };
     if name_node.kind() == "identifier" && is_function_node(value.kind()) {
         let name = ctx.text(name_node);
-        let kind = crate::extract::nested_kind(ctx, SymbolKind::Function);
+        let kind = component_or_nested(ctx, &name, returns_jsx(value));
         push_scope(ctx, &name, kind, node);
         walk(value, ctx);
         pop_scope(ctx);
@@ -96,7 +101,7 @@ fn define_field(node: Node<'_>, ctx: &mut Ctx<'_>) {
         if is_function_node(value.kind()) {
             let name = node_text(name_node, ctx.source);
             if !name.is_empty() {
-                let kind = crate::extract::nested_kind(ctx, SymbolKind::Function);
+                let kind = component_or_nested(ctx, &name, returns_jsx(value));
                 push_scope(ctx, &name, kind, node);
                 walk(value, ctx);
                 pop_scope(ctx);
@@ -105,6 +110,36 @@ fn define_field(node: Node<'_>, ctx: &mut Ctx<'_>) {
         }
     }
     walk_children(node, ctx, walk);
+}
+
+fn component_or_nested(ctx: &Ctx<'_>, name: &str, jsx: bool) -> SymbolKind {
+    // React components are PascalCase. Prefer JSX evidence; still accept
+    // PascalCase module-level functions in TS/TSX/JSX files.
+    let at_module = ctx
+        .stack
+        .last()
+        .is_some_and(|frame| matches!(frame.kind, SymbolKind::Module | SymbolKind::Namespace));
+    if looks_like_component(name) && (jsx || at_module) {
+        return SymbolKind::Component;
+    }
+    crate::extract::nested_kind(ctx, SymbolKind::Function)
+}
+
+fn returns_jsx(node: Node<'_>) -> bool {
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if matches!(
+            current.kind(),
+            "jsx_element" | "jsx_self_closing_element" | "jsx_fragment"
+        ) {
+            return true;
+        }
+        let mut cursor = current.walk();
+        for child in current.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    false
 }
 
 fn function_name(node: Node<'_>, ctx: &Ctx<'_>) -> Option<String> {
@@ -132,8 +167,44 @@ fn record_new(node: Node<'_>, ctx: &mut Ctx<'_>) {
 }
 
 fn record_callee(func: Node<'_>, site: Node<'_>, ctx: &mut Ctx<'_>) {
-    if let Some((receiver, callee)) = callee_parts(func, ctx.source) {
-        ctx.add_call(receiver, callee, line_number(site.start_position().row));
+    let Some((receiver, callee)) = callee_parts(func, ctx.source) else {
+        return;
+    };
+    let line = line_number(site.start_position().row);
+    let literal = site
+        .child_by_field_name("arguments")
+        .and_then(|args| first_string_literal(args, ctx.source));
+    maybe_http(&receiver, &callee, literal.as_deref(), line, ctx);
+    ctx.add_call(receiver, callee, line, literal);
+}
+
+fn maybe_http(
+    receiver: &Option<String>,
+    callee: &str,
+    literal: Option<&str>,
+    line: u32,
+    ctx: &mut Ctx<'_>,
+) {
+    let Some(url) = literal else {
+        return;
+    };
+    let recv = receiver.as_deref().unwrap_or("");
+    if callee == "fetch" && receiver.is_none() {
+        ctx.add_http_call("fetch".to_string(), None, url.to_string(), line);
+        return;
+    }
+    if recv == "axios"
+        || recv.ends_with(".axios")
+        || (recv.is_empty() && callee == "axios")
+        || matches!(callee, "get" | "post" | "put" | "delete" | "patch")
+            && (recv == "axios" || recv.ends_with("axios"))
+    {
+        let method = if matches!(callee, "get" | "post" | "put" | "delete" | "patch") {
+            Some(callee.to_ascii_uppercase())
+        } else {
+            None
+        };
+        ctx.add_http_call("axios".to_string(), method, url.to_string(), line);
     }
 }
 

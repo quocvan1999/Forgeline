@@ -6,10 +6,11 @@ use crate::CoreError;
 const MIGRATION_1: &str = r#"
 CREATE TABLE projects (
     id TEXT PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX idx_projects_name_nocase ON projects(name COLLATE NOCASE);
 
 CREATE TABLE sources (
     id TEXT PRIMARY KEY,
@@ -96,6 +97,20 @@ CREATE INDEX idx_summaries_owner ON summaries(project_id, owner_id);
 CREATE INDEX idx_summaries_level ON summaries(project_id, level);
 "#;
 
+const MIGRATION_2: &str = r#"
+CREATE TABLE projects_nocase (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+INSERT INTO projects_nocase (id, name, created_at, updated_at)
+SELECT id, name, created_at, updated_at FROM projects;
+DROP TABLE projects;
+ALTER TABLE projects_nocase RENAME TO projects;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_nocase ON projects(name COLLATE NOCASE);
+"#;
+
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -108,15 +123,39 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {
         [],
         |row| row.get(0),
     )?;
-    if current >= 1 {
-        return Ok(());
+    if current < 1 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_1)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?1)",
+            [now_rfc3339()],
+        )?;
+        tx.commit()?;
     }
-    let tx = conn.transaction()?;
-    tx.execute_batch(MIGRATION_1)?;
-    tx.execute(
-        "INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?1)",
-        [now_rfc3339()],
+    let current: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |row| row.get(0),
     )?;
-    tx.commit()?;
+    if current < 2 {
+        let tx = conn.transaction()?;
+        // Fresh installs already have the NOCASE index from migration 1.
+        let has_index: bool = tx
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_projects_name_nocase'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if !has_index {
+            tx.execute_batch(MIGRATION_2)?;
+        }
+        tx.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?1)",
+            [now_rfc3339()],
+        )?;
+        tx.commit()?;
+    }
     Ok(())
 }

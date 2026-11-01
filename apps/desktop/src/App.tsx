@@ -221,8 +221,8 @@ export function App() {
                 <b>{stats.exactCallCount}</b>
               </article>
               <article className="card">
-                <span className="muted">Lời gọi suy đoán</span>
-                <b>{stats.inferredCallCount}</b>
+                <span className="muted">Chưa phân giải</span>
+                <b>{stats.unresolvedCallCount}</b>
               </article>
             </section>
             <pre className="summary">{stats.summary.trim()}</pre>
@@ -243,7 +243,7 @@ export function App() {
                     </p>
                     <p>
                       {source.fileCount} tệp · {source.symbolCount} ký hiệu · chính xác {source.exactCallCount} ·
-                      suy đoán {source.inferredCallCount} · chưa phân giải {source.unresolvedCallCount}
+                      chưa phân giải {source.unresolvedCallCount}
                     </p>
                     {source.statusMessage ? <p className="error">{source.statusMessage}</p> : null}
                   </div>

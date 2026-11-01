@@ -93,7 +93,6 @@ pub struct SymbolReport {
     pub symbol: SymbolHit,
     pub outgoing_calls: Vec<EdgeHit>,
     pub exact_caller_count: i64,
-    pub inferred_caller_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -101,7 +100,6 @@ pub struct SymbolReport {
 pub struct CallerGroup {
     pub symbol: SymbolHit,
     pub callers: Vec<EdgeHit>,
-    pub hidden_inferred: i64,
     pub truncated: bool,
 }
 

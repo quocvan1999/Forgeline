@@ -1,7 +1,8 @@
 //! Tree-sitter indexing for one source tree.
 //!
-//! Parsers never execute the code they read. Call edges carry a provenance tag
-//! so exact structural links can be queried without inferred name matches.
+//! Parsers never execute the code they read. Only exact edges are stored:
+//! imports/usings, same-scope or same-class resolution, and fully qualified
+//! names. Unresolvable calls stay as unresolved references, not edges.
 
 #![forbid(unsafe_code)]
 
@@ -19,12 +20,10 @@ pub use hashutil::content_hash;
 pub use model::*;
 pub use scan::{index_contents, index_path, FileInput};
 
-pub const EXTRACTOR_VERSION: u32 = 1;
+pub const EXTRACTOR_VERSION: u32 = 2;
 
-/// Exact structural edge (same file, import binding, or method receiver).
+/// Every stored edge is exact.
 pub const CONFIDENCE_EXACT: f64 = 1.0;
-/// Unique bare-name match. Kept out of default caller queries.
-pub const CONFIDENCE_INFERRED: f64 = 0.4;
 
 /// Files larger than this are skipped. Tree-sitter is not asked to parse them.
 pub const MAX_FILE_BYTES: u64 = 1_048_576;

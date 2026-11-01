@@ -2,6 +2,12 @@
 
 Forgeline là ứng dụng desktop local-first cho công việc phần mềm nhiều agent. Mỗi cuộc hội thoại là một dự án. Một dự án gắn được nhiều nguồn mã (backend, web, mobile, …). Giai đoạn 1 dựng kho dữ liệu cục bộ và đồ thị cú pháp, chưa điều phối agent.
 
+## Trọng tâm ngôn ngữ (giai đoạn 1)
+
+- **C#** (backend): namespace, class, interface, record, struct, method, property, constructor, `using`, lời gọi, thuộc tính ASP.NET (`[HttpGet]`, `[HttpPost]`, `[Route]`, …).
+- **JavaScript / React**: JS, JSX; kèm TypeScript / TSX vì web React thường dùng. Component (PascalCase), import, hooks (ghi nhận lời gọi), `fetch` / `axios` kèm URL literal.
+- **Python** vẫn chạy được nhưng không còn là ưu tiên.
+
 ## Vì sao không đi theo Graphify
 
 Ba điểm yếu đã đo trên Graphify (Graphify-Labs/graphify):
@@ -12,9 +18,10 @@ Ba điểm yếu đã đo trên Graphify (Graphify-Labs/graphify):
 
 Forgeline tách những việc đó ngay từ lược đồ:
 
-- Mọi cạnh có `provenance` (`exact` hoặc `inferred`) và `confidence`. Lệnh `callers` mặc định chỉ trả cạnh `exact`. Cạnh inferred vẫn được lưu để soi, nhưng không lẫn vào kết quả mặc định.
+- **Chỉ lưu cạnh exact.** Không có cạnh inferred, không có ngưỡng confidence cố định kiểu `0.4`.
+- Lời gọi không phân giải được được **đếm / giữ như unresolved reference** (không thành cạnh), để đo độ phủ.
 - Giai đoạn 1 không có truy vấn ngôn ngữ tự nhiên. `explain` và `callers` tìm đúng tên ký hiệu và trả `file:dòng`.
-- Không xuất một JSON đồ thị khổng lồ. Dữ liệu nằm trong SQLite. Agent đọc tóm tắt theo tầng, dừng khi đủ ngữ cảnh.
+- Không xuất một JSON đồ thị khổng lồ. Dữ liệu nằm trong **một database SQLite dùng chung** cho mọi dự án. Agent đọc tóm tắt theo tầng (một ngôn ngữ duy nhất).
 
 ## Các lớp
 
@@ -25,24 +32,26 @@ Giao diện desktop (Tauri)  và  CLI
 forgeline-core          dự án, nguồn, SQLite, thư mục dữ liệu
         │
         ▼
-forgeline-graph         tree-sitter, băm tệp, phân giải cạnh, tóm tắt
+forgeline-graph         tree-sitter (C#, JS/TS/JSX/TSX; Python phụ), hash, cạnh exact, tóm tắt
         │
         ▼
-(sau này) SCIP / LSP    kiểu, overload, default export, re-export
+(sau này) lớp chính xác
+        Roslyn / SCIP cho C#
+        TypeScript compiler / scip-typescript cho JS/TS
         │
         ▼
-(sau này) liên kết xuyên nguồn
+(sau này) liên kết xuyên nguồn (API client → route, schema, config)
 ```
 
-Lớp tree-sitter đang chạy cho Python, TypeScript, TSX và JavaScript. Nó chỉ đọc cây cú pháp. Nó không import, không eval, không chạy mã đang được phân tích.
+Parser chỉ đọc cây cú pháp. Không import, không eval, không chạy mã đang phân tích.
 
-Lớp chính xác (SCIP hoặc LSP) sẽ gắn kiểu cho `client.get()` và lời gọi qua interface. Khi chưa có kiểu, những lời gọi dạng thuộc tính không được đoán bằng tên. Đó là cố ý: đoán tên là cách cạnh sai lọt vào truy vấn đường đi.
+Lớp tree-sitter cố ý từ chối đoán: `_service.Find()`, `client.get()` không có kiểu → unresolved, không thành cạnh. Precision sẽ tăng khi gắn Roslyn/SCIP và scip-typescript.
 
-Liên kết xuyên nguồn (client API → route backend, model/schema dùng chung, config/env) đã có mặt trong enum `EdgeKind` (`cross_source_api`, `shares_schema`, `config_ref`) nhưng indexer chưa phát sinh các cạnh đó. Chúng không dùng lại kind `calls`, để sau này lọc được riêng.
+Liên kết xuyên nguồn đã có kind dành sẵn (`cross_source_api`, `shares_schema`, `config_ref`) nhưng chưa phát sinh.
 
 ## Thư mục dữ liệu
 
-Một thư mục dữ liệu cho cả ứng dụng. Biến `FORGELINE_DATA_DIR` ghi đè vị trí này.
+Một thư mục dữ liệu và **một file `forgeline.db` dùng chung** cho mọi dự án. `FORGELINE_DATA_DIR` ghi đè vị trí.
 
 | Hệ điều hành | Mặc định |
 | --- | --- |
@@ -52,92 +61,69 @@ Một thư mục dữ liệu cho cả ứng dụng. Biến `FORGELINE_DATA_DIR` 
 
 ```text
 forgeline/
-  forgeline.db
+  forgeline.db                 # một database cho tất cả dự án
   projects/
     <project_id>/
       sources/
         <source_id>/
-          checkout/          # chỉ khi nguồn là URL git
+          checkout/            # chỉ khi nguồn là URL git
 ```
 
-Nguồn đường dẫn cục bộ không bị sao chép. Nguồn git được `git clone --depth 1` vào `checkout/` bằng git có sẵn trên máy. Lần phân tích sau không `fetch` lại, nên không có mạng ngầm. Forgeline không tự cài git.
+Nguồn đường dẫn cục bộ không bị sao chép. Nguồn git: `git clone --depth 1` (không submodule) bằng git có sẵn trên máy. Lần phân tích sau không `fetch`. Forgeline không tự cài git.
 
 ## Mô hình dự án
 
-- `projects`: id, tên duy nhất trong một database, thời điểm tạo và sửa.
-- `sources`: thuộc một dự án. `kind` là `local_path` hoặc `git_url`. `status` là `pending`, `indexing`, `ready`, hoặc `error`.
-- Bộ đếm trên từng nguồn (tệp, ký hiệu, cạnh exact/inferred, lời gọi chưa phân giải, tệp tái dùng) được ghi lại sau mỗi lần phân tích.
+- `projects`: id, tên **duy nhất không phân biệt hoa thường** (index `COLLATE NOCASE`), thời điểm tạo và sửa. Trùng tên → lỗi tiếng Việt rõ ràng.
+- `sources`: thuộc một dự án. `kind` là `local_path` hoặc `git_url`. Desktop chọn thư mục bằng hộp thoại hệ điều hành.
+- Bộ đếm: tệp, ký hiệu, cạnh exact, unresolved, ambiguous, tái dùng hash.
 
 ## Lược đồ đồ thị
 
-Ký hiệu thống nhất, có không gian tên theo nguồn:
+Id ký hiệu có không gian tên theo nguồn:
 
 ```text
 <source_id>::<đường dẫn>::<kind>::<tên đầy đủ>@<dòng>
 ```
 
-Hai nguồn trong cùng dự án không đụng id. `tên đầy đủ` của hàm ở mức module là tên hàm (`main`). Phương thức là `Box.ping`. Hàm lồng nhau là `Box.run.inner`.
-
-Bảng:
-
 | Bảng | Việc |
 | --- | --- |
-| `symbols` | hàm, lớp, phương thức, module (một module mỗi tệp) |
-| `edges` | `contains`, `imports`, `calls`, và ba kind xuyên nguồn dành sẵn |
-| `file_extractions` | JSON cây cú pháp thô kèm hash SHA-256, để lần sau khỏi parse lại |
-| `summaries` | tóm tắt `project`, `source`, `module`, `symbol` |
+| `symbols` | module, namespace, class/interface/record/struct, function/method/constructor/property, component |
+| `edges` | chỉ exact: `contains`, `imports`, `calls` (+ kind xuyên nguồn dành sẵn) |
+| `file_extractions` | JSON trích xuất + hash SHA-256 |
+| `summaries` | tóm tắt project → source → module → symbol (một ngôn ngữ) |
 
-Cạnh:
+Mỗi cạnh lưu: `provenance=exact`, `confidence=1.0`, `evidence_path` / `evidence_line`, `detail` (`lexical`, `import`, `namespace`, `method`, `type`, `fqn`, `syntax`).
 
-| Trường | Ý nghĩa |
-| --- | --- |
-| `provenance` | `exact` hoặc `inferred` |
-| `confidence` | `1.0` nếu exact, `0.4` nếu inferred trong scaffold này |
-| `evidence_path`, `evidence_line` | chỗ trong mã chứng minh cạnh |
-| `detail` | `lexical`, `import`, `namespace`, `method`, `name`, `syntax` |
+### Cách phân giải lời gọi (chỉ exact)
 
-### Cách phân giải lời gọi
+1. Lexical / cùng phạm vi trong tệp.
+2. Import / using binding phân giải được tới đúng một ký hiệu.
+3. Receiver `this` / `base` / `self` → method cùng class/type.
+4. Namespace import hoặc tên type cùng nguồn → member duy nhất.
+5. Fully-qualified name (có dấu `.`) khớp đúng một `qualified_name`.
 
-Thứ tự, dừng ở bước đầu tiên khớp:
+Mọi trường hợp khác → **unresolved** (đếm, không lưu cạnh). Không có bước “tên trùng duy nhất trên toàn nguồn”.
 
-1. **Exact / lexical.** Cùng tệp, trong phạm vi: hàm lồng trong hàm đang xét, rồi hàm hoặc lớp mức module. Hàm che tên ở ngoài.
-2. **Exact / import.** Tên cục bộ được `import` hoặc `from ... import` và specifier trỏ tới đúng một tệp, đúng một ký hiệu mức module. Import không phân giải được thì lời gọi là *chưa phân giải*, không rơi xuống bước đoán tên.
-3. **Exact / method.** `self`, `cls`, hoặc `this` gọi một phương thức của lớp bao quanh.
-4. **Exact / namespace.** `import utils` rồi `utils.add()`, khi `add` là ký hiệu mức module của tệp đó.
-5. **Inferred / name.** Lời gọi trần (không có receiver) không có binding, và đúng một ký hiệu trong nguồn mang tên đó.
-6. **Bỏ qua.** Nhiều ứng viên, hoặc lời gọi thuộc tính không biết kiểu (`client.get()`). Không tạo cạnh.
+### ASP.NET và HTTP client
 
-Import bên ngoài (`react`, `express`) và `console.log` không sinh nút giả.
-
-Phân tích lại theo hash: tệp không đổi và cùng phiên bản extractor được giữ nguyên phần trích xuất. Cạnh được tính lại trên toàn nguồn, vì một tệp đổi có thể làm đổi phân giải import. Tệp đã xóa biến mất khỏi đồ thị. Parser có timeout 1 giây, tệp lớn hơn 1 MiB bị bỏ, symlink không được đi theo, và indexer từ chối gốc hệ thống cùng các thư mục phụ thuộc (`node_modules`, `target`, `.git`, …).
+- `[Route]`, `[HttpGet]` / `[HttpPost]` / … trên method (ghép với Route của class nếu có) → `RouteEndpoint` trong payload + tóm tắt.
+- `fetch("...")`, `axios.get/post("...")`, một số lời gọi `HttpClient` kèm string URL → `HttpCall` (chưa nối xuyên nguồn).
 
 ## Tóm tắt nhiều tầng
 
-Tóm tắt viết bằng tiếng Anh vì chúng là ngữ cảnh cho agent, đo token sơ bộ bằng số ký tự chia 4.
-
-Thứ tự đọc: **project → source → module → symbol**. Tầng trên đủ để biết nguồn nào đáng mở. Tầng ký hiệu liệt kê lời gọi kèm exact/inferred, không nhét cả đồ thị.
-
-Ví dụ tầng project:
-
-```text
-project sample
-sources 1 | symbols 11 | calls exact 3 inferred 1
-read order: project, source, module, symbol
-source sample ready symbols 11 calls exact 3 inferred 1
-```
+Một ngôn ngữ duy nhất (không song ngữ). Thứ tự đọc: **project → source → module → symbol**. Token ước lượng ≈ số ký tự / 4.
 
 ## Bảo mật
 
-- Không telemetry, không tự cập nhật, không plugin mạng trong vỏ desktop.
-- Parser không thực thi mã. Git chỉ chạy khi người dùng phân tích một URL đã kiểm tra, qua `Command` với danh sách đối số, không qua shell.
-- URL `https` có userinfo (`user:token@host`) bị từ chối để token không nằm trong SQLite.
-- SQL dùng tham số. Khóa ngoại bật. Một file SQLite, chế độ WAL.
-- CSP của cửa sổ không mở script từ mạng ngoài.
+- Không telemetry, không tự cập nhật, không plugin mạng ngoài vỏ desktop.
+- Parser không thực thi mã. Git chỉ khi người dùng phân tích URL đã kiểm tra, qua `Command` không shell; `--depth 1`, không submodule.
+- URL `https` có userinfo bị từ chối.
+- SQL tham số; một SQLite WAL; CSP cửa sổ không mở script mạng ngoài.
 
 ## Việc scaffold cố ý chưa làm
 
-- Cạnh xuyên nguồn.
-- Lớp SCIP/LSP, `export default`, re-export, `require()`.
-- Truy vấn đường đi chỉ-exact cho agent.
-- API cắt ngữ cảnh theo ngân sách token (tóm tắt đã có, chưa có tham số ngân sách).
-- Điều phối nhiều agent trong cuộc hội thoại.
+- Cạnh xuyên nguồn (sẽ dựa route/http literal + lớp chính xác).
+- Roslyn / SCIP / scip-typescript.
+- `export default` phức tạp, re-export, `require()`.
+- Truy vấn đường đi chỉ-exact cho agent với ngân sách token tham số hóa.
+- Điều phối nhiều agent.
