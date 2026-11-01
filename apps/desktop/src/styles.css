@@ -1,0 +1,280 @@
+:root {
+  color-scheme: dark;
+  --bg: #12110e;
+  --panel: #1b1915;
+  --panel-2: #232017;
+  --ink: #f4efe6;
+  --muted: #a79d8e;
+  --line: #3c362c;
+  --accent: #e0a45a;
+  --accent-ink: #2a1d0c;
+  --ok: #9cbe86;
+  --warn: #e0a45a;
+  --danger: #d4776a;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 500px at 10% -10%, rgba(224, 164, 90, 0.08), transparent 50%),
+    var(--bg);
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+  font-weight: 650;
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+input,
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #14130f;
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar,
+.main {
+  min-height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  padding: 1.25rem 1rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  background: rgba(18, 17, 14, 0.92);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.brand strong {
+  font-size: 1.15rem;
+  letter-spacing: 0.04em;
+}
+
+.brand span,
+.muted,
+.empty {
+  color: var(--muted);
+}
+
+.stack,
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  overflow: auto;
+}
+
+.project-list button {
+  text-align: left;
+  background: transparent;
+}
+
+.project-list button.active {
+  border-color: var(--accent);
+  background: #2a241b;
+}
+
+.security {
+  margin-top: auto;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.main {
+  padding: 1.4rem 1.6rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 620;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.summary {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: "Cascadia Code", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.8rem 1rem;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem 0.85rem;
+  box-shadow: var(--shadow);
+}
+
+.card b {
+  display: block;
+  font-size: 1.35rem;
+  margin-top: 0.2rem;
+}
+
+.source {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.8rem;
+  align-items: center;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.source h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+
+.source p {
+  margin: 0;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.75rem;
+  border: 1px solid var(--line);
+}
+
+.badge.ready {
+  color: var(--ok);
+}
+
+.badge.error {
+  color: var(--danger);
+}
+
+.badge.indexing {
+  color: var(--warn);
+}
+
+.error {
+  color: var(--danger);
+  margin: 0;
+}
+
+.form.inline {
+  display: grid;
+  grid-template-columns: 1fr 180px minmax(16rem, 1.8fr) auto;
+  gap: 0.5rem;
+}
+
+.path-picker {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.path-picker input {
+  cursor: pointer;
+}
+
+@media (max-width: 980px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar,
+  .main {
+    min-height: auto;
+  }
+
+  .cards,
+  .form.inline,
+  .path-picker {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "forgeline-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Forgeline desktop shell"
+publish = false
+
+[lib]
+name = "forgeline_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+forgeline-core = { path = "../../../crates/forgeline-core" }
+serde = { workspace = true }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
