@@ -1,0 +1,86 @@
+/* Forgeline Desktop Reset & Base */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  line-height: 1.35;
+  color: var(--label);
+  background-color: var(--bg-window);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Allow text selection where appropriate */
+p,
+span.selectable,
+code,
+pre,
+input,
+textarea,
+table {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Standard focus ring replacement */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Native cursor defaults: pointer only on explicit interactive links */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Clean macOS-style scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--tertiary-label);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--secondary-label);
+}
