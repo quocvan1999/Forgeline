@@ -113,7 +113,8 @@ impl Store {
     pub fn get_project_by_name(&self, name: &str) -> Result<Option<Project>, CoreError> {
         self.conn
             .query_row(
-                "SELECT id, name, created_at, updated_at FROM projects WHERE name = ?1",
+                "SELECT id, name, created_at, updated_at FROM projects
+                 WHERE name = ?1 COLLATE NOCASE",
                 params![name],
                 map_project,
             )
@@ -364,14 +365,7 @@ impl Store {
         }
 
         let symbol_count = graph.symbols().count() as i64;
-        let exact_call_count = graph
-            .call_edges()
-            .filter(|edge| edge.provenance == Provenance::Exact)
-            .count() as i64;
-        let inferred_call_count = graph
-            .call_edges()
-            .filter(|edge| edge.provenance == Provenance::Inferred)
-            .count() as i64;
+        let exact_call_count = graph.call_edges().count() as i64;
         tx.execute(
             "UPDATE sources SET
                 status = 'ready',
@@ -379,21 +373,20 @@ impl Store {
                 file_count = ?1,
                 symbol_count = ?2,
                 exact_call_count = ?3,
-                inferred_call_count = ?4,
-                unresolved_call_count = ?5,
-                ambiguous_call_count = ?6,
-                reindexed_files = ?7,
-                reused_files = ?8,
-                removed_files = ?9,
-                skipped_files = ?10,
-                last_indexed_at = ?11,
-                updated_at = ?11
-             WHERE id = ?12",
+                inferred_call_count = 0,
+                unresolved_call_count = ?4,
+                ambiguous_call_count = ?5,
+                reindexed_files = ?6,
+                reused_files = ?7,
+                removed_files = ?8,
+                skipped_files = ?9,
+                last_indexed_at = ?10,
+                updated_at = ?10
+             WHERE id = ?11",
             params![
                 graph.files.len() as i64,
                 symbol_count,
                 exact_call_count,
-                inferred_call_count,
                 graph.unresolved_calls,
                 graph.ambiguous_calls,
                 graph.reindexed_files,
@@ -459,45 +452,26 @@ impl Store {
         let mut reports = Vec::new();
         for symbol in symbols {
             let outgoing_calls = self.edges_from(&symbol.id, EdgeKind::Calls, None)?;
-            let exact_caller_count = self.count_callers(&symbol.id, Some(Provenance::Exact))?;
-            let inferred_caller_count =
-                self.count_callers(&symbol.id, Some(Provenance::Inferred))?;
+            let exact_caller_count = self.count_callers(&symbol.id)?;
             reports.push(SymbolReport {
                 symbol,
                 outgoing_calls,
                 exact_caller_count,
-                inferred_caller_count,
             });
         }
         Ok(reports)
     }
 
-    pub fn callers(
-        &self,
-        project_id: &str,
-        query: &str,
-        include_inferred: bool,
-    ) -> Result<Vec<CallerGroup>, CoreError> {
+    pub fn callers(&self, project_id: &str, query: &str) -> Result<Vec<CallerGroup>, CoreError> {
         let symbols = self.find_symbols(project_id, query)?;
         let mut groups = Vec::new();
         for symbol in symbols {
-            let provenance = if include_inferred {
-                None
-            } else {
-                Some(Provenance::Exact)
-            };
-            let mut callers = self.edges_to(&symbol.id, provenance)?;
+            let mut callers = self.edges_to(&symbol.id, Some(Provenance::Exact))?;
             let truncated = callers.len() as i64 > LIST_LIMIT;
             callers.truncate(LIST_LIMIT as usize);
-            let hidden_inferred = if include_inferred {
-                0
-            } else {
-                self.count_callers(&symbol.id, Some(Provenance::Inferred))?
-            };
             groups.push(CallerGroup {
                 symbol,
                 callers,
-                hidden_inferred,
                 truncated,
             });
         }
@@ -583,29 +557,15 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
-    fn count_callers(
-        &self,
-        symbol_id: &str,
-        provenance: Option<Provenance>,
-    ) -> Result<i64, CoreError> {
-        if let Some(provenance) = provenance {
-            self.conn
-                .query_row(
-                    "SELECT COUNT(*) FROM edges
-                     WHERE to_symbol_id = ?1 AND kind = 'calls' AND provenance = ?2",
-                    params![symbol_id, provenance.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(CoreError::from)
-        } else {
-            self.conn
-                .query_row(
-                    "SELECT COUNT(*) FROM edges WHERE to_symbol_id = ?1 AND kind = 'calls'",
-                    params![symbol_id],
-                    |row| row.get(0),
-                )
-                .map_err(CoreError::from)
-        }
+    fn count_callers(&self, symbol_id: &str) -> Result<i64, CoreError> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges
+                 WHERE to_symbol_id = ?1 AND kind = 'calls' AND provenance = 'exact'",
+                params![symbol_id],
+                |row| row.get(0),
+            )
+            .map_err(CoreError::from)
     }
 
     fn summary_body(
@@ -641,23 +601,23 @@ impl Store {
         let sources = self.list_sources(project_id)?;
         let symbols: i64 = sources.iter().map(|source| source.symbol_count).sum();
         let exact: i64 = sources.iter().map(|source| source.exact_call_count).sum();
-        let inferred: i64 = sources
+        let unresolved: i64 = sources
             .iter()
-            .map(|source| source.inferred_call_count)
+            .map(|source| source.unresolved_call_count)
             .sum();
         let mut body = format!(
-            "project {}\nsources {} | symbols {symbols} | calls exact {exact} inferred {inferred}\nread order: project, source, module, symbol\n",
+            "project {}\nsources {} | symbols {symbols} | calls exact {exact} | unresolved {unresolved}\nread order: project, source, module, symbol\n",
             project.name,
             sources.len()
         );
         for source in &sources {
             body.push_str(&format!(
-                "source {} {} symbols {} calls exact {} inferred {}\n",
+                "source {} {} symbols {} calls exact {} unresolved {}\n",
                 source.name,
                 source.status,
                 source.symbol_count,
                 source.exact_call_count,
-                source.inferred_call_count
+                source.unresolved_call_count
             ));
         }
         let tokens = forgeline_graph::token_estimate(&body);

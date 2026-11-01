@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// Languages the tree-sitter layer can extract in this scaffold.
+/// Languages the tree-sitter layer can extract.
+/// Phase 1 focus is C# and JavaScript/React (including TypeScript/TSX).
+/// Python remains supported but is not a priority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
+    CSharp,
     Python,
     JavaScript,
     TypeScript,
@@ -13,6 +16,7 @@ pub enum Language {
 impl Language {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::CSharp => "csharp",
             Self::Python => "python",
             Self::JavaScript => "javascript",
             Self::TypeScript => "typescript",
@@ -22,6 +26,7 @@ impl Language {
 
     pub fn grammar_name(self) -> &'static str {
         match self {
+            Self::CSharp => "c_sharp",
             Self::Python => "python",
             Self::JavaScript => "javascript",
             Self::TypeScript => "typescript",
@@ -35,24 +40,58 @@ impl Language {
 #[serde(rename_all = "snake_case")]
 pub enum SymbolKind {
     Module,
-    Function,
+    Namespace,
     Class,
+    Interface,
+    Record,
+    Struct,
+    Function,
     Method,
+    Constructor,
+    Property,
+    /// React function or class component (PascalCase UI unit).
+    Component,
 }
 
 impl SymbolKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Module => "module",
-            Self::Function => "function",
+            Self::Namespace => "namespace",
             Self::Class => "class",
+            Self::Interface => "interface",
+            Self::Record => "record",
+            Self::Struct => "struct",
+            Self::Function => "function",
             Self::Method => "method",
+            Self::Constructor => "constructor",
+            Self::Property => "property",
+            Self::Component => "component",
         }
+    }
+
+    pub fn is_type_scope(self) -> bool {
+        matches!(
+            self,
+            Self::Class | Self::Interface | Self::Record | Self::Struct | Self::Component
+        )
+    }
+
+    pub fn is_callable(self) -> bool {
+        matches!(
+            self,
+            Self::Function
+                | Self::Method
+                | Self::Constructor
+                | Self::Component
+                | Self::Class
+                | Self::Record
+                | Self::Struct
+        )
     }
 }
 
-/// Edge kinds. The cross-source kinds are reserved so later phases do not
-/// overload [`EdgeKind::Calls`] with a second meaning.
+/// Edge kinds. Only exact edges are stored. Cross-source kinds are reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
@@ -92,28 +131,23 @@ impl EdgeKind {
     }
 }
 
-/// How an edge was produced. Default path and caller queries keep only [`Exact`].
+/// Every stored edge is exact. Inferred edges are never written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
-    /// Syntax, scope, or an explicit import binding resolved to one symbol.
     Exact,
-    /// A single bare-name match outside the local scope. Easy to get wrong.
-    Inferred,
 }
 
 impl Provenance {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Exact => "exact",
-            Self::Inferred => "inferred",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "exact" => Some(Self::Exact),
-            "inferred" => Some(Self::Inferred),
             _ => None,
         }
     }
@@ -170,7 +204,7 @@ pub struct Import {
     /// Function, method, or module that owns this binding.
     pub scope_id: String,
     pub local_name: String,
-    /// `None` means the local name is the whole module (namespace import).
+    /// `None` means the local name is the whole module/namespace import.
     pub imported_name: Option<String>,
     pub specifier: String,
     pub relative_path: String,
@@ -181,9 +215,32 @@ pub struct Import {
 pub struct CallSite {
     pub caller_id: String,
     pub callee_name: String,
-    /// `None` for a bare call. Attribute calls that are not `self`/`this`/`cls`
-    /// or a namespace import stay unresolved instead of becoming inferred edges.
+    /// `None` for a bare call. Unknown receivers stay unresolved — never guessed.
     pub receiver: Option<String>,
+    pub relative_path: String,
+    pub line: u32,
+    /// First string literal argument when present (fetch/axios URL, etc.).
+    #[serde(default)]
+    pub literal_arg: Option<String>,
+}
+
+/// ASP.NET-style HTTP endpoint extracted from controller attributes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RouteEndpoint {
+    pub symbol_id: String,
+    pub http_methods: Vec<String>,
+    pub template: String,
+    pub relative_path: String,
+    pub line: u32,
+}
+
+/// Client HTTP call with a string URL literal (fetch, axios, HttpClient).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HttpCall {
+    pub caller_id: String,
+    pub client: String,
+    pub method: Option<String>,
+    pub url_literal: String,
     pub relative_path: String,
     pub line: u32,
 }
@@ -198,7 +255,7 @@ pub struct Edge {
     pub confidence: f64,
     pub evidence_path: String,
     pub evidence_line: u32,
-    /// Short reason: `lexical`, `import`, `namespace`, `method`, `name`, `syntax`.
+    /// Short reason: `lexical`, `import`, `namespace`, `method`, `fqn`, `syntax`.
     pub detail: String,
 }
 
@@ -211,6 +268,10 @@ pub struct ExtractedFile {
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
     pub calls: Vec<CallSite>,
+    #[serde(default)]
+    pub routes: Vec<RouteEndpoint>,
+    #[serde(default)]
+    pub http_calls: Vec<HttpCall>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,6 +289,7 @@ pub struct SourceGraph {
     pub files: Vec<ExtractedFile>,
     pub edges: Vec<Edge>,
     pub summaries: Vec<Summary>,
+    /// Call sites that did not resolve to an exact edge. Not stored as edges.
     pub unresolved_calls: u32,
     pub ambiguous_calls: u32,
     pub reindexed_files: u32,
@@ -262,6 +324,9 @@ pub fn language_for_path(relative_path: &str) -> Option<Language> {
     let path = relative_path.replace('\\', "/");
     if path.ends_with(".d.ts") {
         return None;
+    }
+    if path.ends_with(".cs") {
+        return Some(Language::CSharp);
     }
     if path.ends_with(".py") {
         return Some(Language::Python);

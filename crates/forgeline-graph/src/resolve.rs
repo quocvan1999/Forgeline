@@ -1,10 +1,9 @@
 //! Call resolution policy.
 //!
-//! Exact edges require syntax: the callee is in lexical scope, bound by an
-//! import that resolves to one symbol, a namespace attribute, or `self`/`this`.
-//! A bare name that matches exactly one symbol elsewhere is inferred and tagged.
-//! Attribute calls without a known receiver are left unresolved. They are not
-//! guessed, because those guesses are what pollute path queries.
+//! Only exact edges are stored: lexical/same-scope, import/using bindings,
+//! same-class method receivers (`this`/`base`/`self`), namespace imports, and
+//! fully-qualified names that match exactly one symbol. Everything else is an
+//! unresolved reference — counted, never turned into an edge.
 
 use std::collections::HashMap;
 
@@ -12,11 +11,10 @@ use crate::model::{
     Edge, EdgeKind, ExtractedFile, Import, Language, Provenance, SourceGraph, Symbol, SymbolKind,
 };
 use crate::summarize::summarize;
-use crate::{CONFIDENCE_EXACT, CONFIDENCE_INFERRED};
+use crate::CONFIDENCE_EXACT;
 
 enum CallDecision {
     Exact(String, &'static str),
-    Inferred(String),
     Unresolved,
     Ambiguous,
 }
@@ -79,24 +77,7 @@ pub(crate) fn resolve_graph(
             match resolve_call(file, call, &files, &symbols) {
                 CallDecision::Exact(target_id, detail) => {
                     if let Some(target) = by_id.get(target_id.as_str()) {
-                        edges.push(call_edge(
-                            call,
-                            target,
-                            Provenance::Exact,
-                            CONFIDENCE_EXACT,
-                            detail,
-                        ));
-                    }
-                }
-                CallDecision::Inferred(target_id) => {
-                    if let Some(target) = by_id.get(target_id.as_str()) {
-                        edges.push(call_edge(
-                            call,
-                            target,
-                            Provenance::Inferred,
-                            CONFIDENCE_INFERRED,
-                            "name",
-                        ));
+                        edges.push(call_edge(call, target, detail));
                     }
                 }
                 CallDecision::Unresolved => unresolved_calls += 1,
@@ -144,20 +125,14 @@ pub(crate) fn resolve_graph(
     }
 }
 
-fn call_edge(
-    call: &crate::model::CallSite,
-    target: &Symbol,
-    provenance: Provenance,
-    confidence: f64,
-    detail: &str,
-) -> Edge {
+fn call_edge(call: &crate::model::CallSite, target: &Symbol, detail: &str) -> Edge {
     Edge {
         kind: EdgeKind::Calls,
         from_id: call.caller_id.clone(),
         to_id: Some(target.id.clone()),
         to_name: target.name.clone(),
-        provenance,
-        confidence,
+        provenance: Provenance::Exact,
+        confidence: CONFIDENCE_EXACT,
         evidence_path: call.relative_path.clone(),
         evidence_line: call.line,
         detail: detail.to_string(),
@@ -174,6 +149,10 @@ fn resolve_call(
         if is_method_receiver(receiver) {
             return resolve_method(file, call);
         }
+        // Fully qualified type or namespace prefix: Namespace.Type.Member
+        if let Some(decision) = resolve_fqn(symbols, receiver, &call.callee_name) {
+            return decision;
+        }
         if let Some(import) = visible_imports(file, &call.caller_id).find(|import| {
             import.imported_name.is_none()
                 && receiver_matches_namespace(receiver, &import.local_name)
@@ -182,6 +161,11 @@ fn resolve_call(
                 Some(target) => CallDecision::Exact(target.id.clone(), "namespace"),
                 None => CallDecision::Unresolved,
             };
+        }
+        // C# using of a type name used as receiver: `Helper.Run()` after `using ...`
+        // when Helper is a same-source type symbol.
+        if let Some(decision) = resolve_type_member(symbols, receiver, &call.callee_name) {
+            return decision;
         }
         return CallDecision::Unresolved;
     }
@@ -202,46 +186,44 @@ fn resolve_call(
         };
     }
 
-    let mut global: Vec<&Symbol> = symbols
-        .iter()
-        .copied()
-        .filter(|symbol| {
-            symbol.name == call.callee_name
-                && matches!(
-                    symbol.kind,
-                    SymbolKind::Function | SymbolKind::Method | SymbolKind::Class
-                )
-        })
-        .collect();
-    global.sort_by(|left, right| left.id.cmp(&right.id));
-    global.dedup_by(|left, right| left.id == right.id);
-    match global.len() {
-        1 => CallDecision::Inferred(global[0].id.clone()),
-        0 => CallDecision::Unresolved,
-        _ => CallDecision::Ambiguous,
+    // Fully qualified bare callee (contains '.') that uniquely matches.
+    // A simple name must not match via qualified_name — that would reintroduce
+    // inferred cross-file edges under another name.
+    if call.callee_name.contains('.') {
+        let fqn_hits: Vec<&Symbol> = symbols
+            .iter()
+            .copied()
+            .filter(|symbol| symbol.qualified_name == call.callee_name && symbol.kind.is_callable())
+            .collect();
+        return match fqn_hits.len() {
+            1 => CallDecision::Exact(fqn_hits[0].id.clone(), "fqn"),
+            n if n > 1 => CallDecision::Ambiguous,
+            _ => CallDecision::Unresolved,
+        };
     }
+    CallDecision::Unresolved
 }
 
 fn is_method_receiver(receiver: &str) -> bool {
-    matches!(receiver, "self" | "cls" | "this")
+    matches!(receiver, "self" | "cls" | "this" | "base")
 }
 
 fn receiver_matches_namespace(receiver: &str, local_name: &str) -> bool {
-    // `pkg.mod.fn()` stays unresolved in this layer. Guessing through dotted
-    // receivers is how inferred edges leak into path queries.
     receiver == local_name
 }
 
 fn resolve_method(file: &ExtractedFile, call: &crate::model::CallSite) -> CallDecision {
-    let Some(class_id) = enclosing_class_id(file, &call.caller_id) else {
+    let Some(class_id) = enclosing_type_id(file, &call.caller_id) else {
         return CallDecision::Unresolved;
     };
     let methods: Vec<&Symbol> = file
         .symbols
         .iter()
         .filter(|symbol| {
-            symbol.kind == SymbolKind::Method
-                && symbol.name == call.callee_name
+            matches!(
+                symbol.kind,
+                SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Property
+            ) && symbol.name == call.callee_name
                 && symbol.parent_id.as_deref() == Some(class_id.as_str())
         })
         .collect();
@@ -252,16 +234,60 @@ fn resolve_method(file: &ExtractedFile, call: &crate::model::CallSite) -> CallDe
     }
 }
 
-fn enclosing_class_id(file: &ExtractedFile, start_id: &str) -> Option<String> {
+fn enclosing_type_id(file: &ExtractedFile, start_id: &str) -> Option<String> {
     let mut current = start_id.to_string();
     for _ in 0..64 {
         let symbol = file.symbols.iter().find(|symbol| symbol.id == current)?;
-        if symbol.kind == SymbolKind::Class {
+        if symbol.kind.is_type_scope() {
             return Some(symbol.id.clone());
         }
         current = symbol.parent_id.clone()?;
     }
     None
+}
+
+fn resolve_fqn(symbols: &[&Symbol], receiver: &str, member: &str) -> Option<CallDecision> {
+    let qualified = format!("{receiver}.{member}");
+    let hits: Vec<&Symbol> = symbols
+        .iter()
+        .copied()
+        .filter(|symbol| symbol.qualified_name == qualified && symbol.kind.is_callable())
+        .collect();
+    match hits.len() {
+        1 => Some(CallDecision::Exact(hits[0].id.clone(), "fqn")),
+        n if n > 1 => Some(CallDecision::Ambiguous),
+        _ => None,
+    }
+}
+
+fn resolve_type_member(symbols: &[&Symbol], type_name: &str, member: &str) -> Option<CallDecision> {
+    // Exact type name (not dotted) matching one type symbol in the source.
+    if type_name.contains('.') {
+        return None;
+    }
+    let types: Vec<&Symbol> = symbols
+        .iter()
+        .copied()
+        .filter(|symbol| symbol.name == type_name && symbol.kind.is_type_scope())
+        .collect();
+    if types.len() != 1 {
+        return None;
+    }
+    let type_id = types[0].id.as_str();
+    let members: Vec<&Symbol> = symbols
+        .iter()
+        .copied()
+        .filter(|symbol| {
+            symbol.parent_id.as_deref() == Some(type_id)
+                && symbol.name == member
+                && symbol.kind.is_callable()
+        })
+        .collect();
+    match members.len() {
+        1 => Some(CallDecision::Exact(members[0].id.clone(), "type")),
+        0 => Some(CallDecision::Unresolved),
+        _ => Some(CallDecision::Ambiguous),
+    }
 }
 
 fn lexical_candidates<'a>(
@@ -274,7 +300,7 @@ fn lexical_candidates<'a>(
         if symbol.name != call.callee_name {
             continue;
         }
-        if !matches!(symbol.kind, SymbolKind::Function | SymbolKind::Class) {
+        if !symbol.kind.is_callable() {
             continue;
         }
         if let Some(distance) = distance_to_caller(file, symbol, &call.caller_id) {
@@ -353,14 +379,45 @@ fn resolve_import_symbol<'a>(
     import: &Import,
     files: &'a [ExtractedFile],
 ) -> Option<&'a Symbol> {
-    let target = resolve_specifier(&file.relative_path, &import.specifier, file.language, files)?;
-    match &import.imported_name {
-        Some(name) if name == "default" => None,
-        Some(name) => module_level_symbol(target, name),
-        None => target
-            .symbols
-            .iter()
-            .find(|symbol| symbol.kind == SymbolKind::Module),
+    match file.language {
+        Language::CSharp => resolve_csharp_using(import, files),
+        _ => {
+            let target =
+                resolve_specifier(&file.relative_path, &import.specifier, file.language, files)?;
+            match &import.imported_name {
+                Some(name) if name == "default" => {
+                    // Prefer a single exported component/function of the same local name.
+                    module_level_symbol(target, &import.local_name)
+                        .or_else(|| module_level_symbol(target, name))
+                }
+                Some(name) => module_level_symbol(target, name),
+                None => target
+                    .symbols
+                    .iter()
+                    .find(|symbol| symbol.kind == SymbolKind::Module),
+            }
+        }
+    }
+}
+
+fn resolve_csharp_using<'a>(import: &Import, files: &'a [ExtractedFile]) -> Option<&'a Symbol> {
+    // Resolve `using Models;` / `using Api.Controllers;` to a namespace symbol,
+    // or a same-source type whose qualified name equals the specifier.
+    let mut matches: Vec<&Symbol> = files
+        .iter()
+        .flat_map(|file| file.symbols.iter())
+        .filter(|symbol| {
+            symbol.qualified_name == import.specifier
+                || (symbol.name == import.local_name
+                    && (symbol.kind == SymbolKind::Namespace || symbol.kind.is_type_scope()))
+        })
+        .collect();
+    matches.sort_by(|left, right| left.id.cmp(&right.id));
+    matches.dedup_by(|left, right| left.id == right.id);
+    if matches.len() == 1 {
+        Some(matches[0])
+    } else {
+        None
     }
 }
 
@@ -370,6 +427,31 @@ fn namespace_member<'a>(
     member: &str,
     files: &'a [ExtractedFile],
 ) -> Option<&'a Symbol> {
+    if file.language == Language::CSharp {
+        // Member of imported namespace/type across files in this source.
+        let mut hits: Vec<&Symbol> = files
+            .iter()
+            .flat_map(|item| item.symbols.iter())
+            .filter(|symbol| {
+                symbol.name == member
+                    && symbol.kind.is_callable()
+                    && symbol
+                        .qualified_name
+                        .rsplit_once('.')
+                        .is_some_and(|(prefix, _)| {
+                            prefix == import.specifier
+                                || prefix.ends_with(&format!(".{}", import.local_name))
+                                || prefix == import.local_name
+                        })
+            })
+            .collect();
+        hits.sort_by(|left, right| left.id.cmp(&right.id));
+        hits.dedup_by(|left, right| left.id == right.id);
+        return match hits.len() {
+            1 => Some(hits[0]),
+            _ => None,
+        };
+    }
     let target = resolve_specifier(&file.relative_path, &import.specifier, file.language, files)?;
     module_level_symbol(target, member)
 }
@@ -411,6 +493,7 @@ fn resolve_specifier<'a>(
 
 fn candidate_paths(from_file: &str, specifier: &str, language: Language) -> Vec<String> {
     match language {
+        Language::CSharp => Vec::new(),
         Language::Python => python_candidates(from_file, specifier),
         Language::JavaScript | Language::TypeScript | Language::Tsx => {
             javascript_candidates(from_file, specifier)

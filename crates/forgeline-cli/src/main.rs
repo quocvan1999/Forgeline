@@ -1,5 +1,4 @@
-//! Compact developer CLI. Queries default to exact edges so inferred names
-//! do not drown out real callers.
+//! Compact developer CLI. Only exact edges are stored and queried.
 
 #![forbid(unsafe_code)]
 
@@ -33,13 +32,8 @@ enum Command {
     Stats,
     /// Show one symbol, its calls, and caller counts.
     Explain { symbol: String },
-    /// List callers of a symbol. Inferred edges are hidden unless requested.
-    Callers {
-        symbol: String,
-        /// Include inferred name-only edges.
-        #[arg(long)]
-        include_inferred: bool,
-    },
+    /// List exact callers of a symbol.
+    Callers { symbol: String },
 }
 
 fn main() -> ExitCode {
@@ -75,18 +69,15 @@ fn run() -> Result<ExitCode, CoreError> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Callers {
-            symbol,
-            include_inferred,
-        } => {
+        Command::Callers { symbol } => {
             let project = store.require_project(cli.project.as_deref())?;
-            let groups = store.callers(&project.id, &symbol, include_inferred)?;
+            let groups = store.callers(&project.id, &symbol)?;
             if groups.is_empty() {
                 println!("no symbol matches {symbol}");
                 return Ok(ExitCode::from(1));
             }
             for group in &groups {
-                print_callers(group, include_inferred);
+                print_callers(group);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -159,10 +150,9 @@ fn print_index(project: &str, source: &Source) {
         skipped = source.skipped_files
     );
     println!(
-        "symbols {symbols} | calls exact {exact} inferred {inferred} | unresolved {unresolved} | ambiguous {ambiguous}",
+        "symbols {symbols} | calls exact {exact} | unresolved {unresolved} | ambiguous {ambiguous}",
         symbols = source.symbol_count,
         exact = source.exact_call_count,
-        inferred = source.inferred_call_count,
         unresolved = source.unresolved_call_count,
         ambiguous = source.ambiguous_call_count
     );
@@ -172,13 +162,12 @@ fn print_stats(stats: &ProjectStats, sources: &[Source]) {
     println!("{}", stats.summary.trim_end());
     for source in sources {
         println!(
-            "{name} {status} files {files} symbols {symbols} calls exact {exact} inferred {inferred} unresolved {unresolved}",
+            "{name} {status} files {files} symbols {symbols} calls exact {exact} unresolved {unresolved}",
             name = source.name,
             status = source.status,
             files = source.file_count,
             symbols = source.symbol_count,
             exact = source.exact_call_count,
-            inferred = source.inferred_call_count,
             unresolved = source.unresolved_call_count
         );
     }
@@ -202,13 +191,10 @@ fn print_explain(report: &SymbolReport) {
     for edge in &report.outgoing_calls {
         println!("  {}", format_edge(edge));
     }
-    println!(
-        "  callers exact {} inferred {}",
-        report.exact_caller_count, report.inferred_caller_count
-    );
+    println!("  callers exact {}", report.exact_caller_count);
 }
 
-fn print_callers(group: &CallerGroup, include_inferred: bool) {
+fn print_callers(group: &CallerGroup) {
     let symbol = &group.symbol;
     println!(
         "{kind} {qualified} @ {path}:{line} [{source}]",
@@ -223,12 +209,6 @@ fn print_callers(group: &CallerGroup, include_inferred: bool) {
     }
     for edge in &group.callers {
         println!("  {}", format_edge(edge));
-    }
-    if !include_inferred && group.hidden_inferred > 0 {
-        println!(
-            "  {count} inferred caller(s) hidden; pass --include-inferred",
-            count = group.hidden_inferred
-        );
     }
     if group.truncated {
         println!("  truncated");

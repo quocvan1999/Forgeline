@@ -16,9 +16,9 @@ pub enum CoreError {
     ProjectAmbiguous,
     #[error("source not found")]
     SourceNotFound,
-    #[error("a project named {0:?} already exists")]
+    #[error("Đã có dự án tên \"{0}\" (không phân biệt hoa thường).")]
     DuplicateName(String),
-    #[error("invalid name")]
+    #[error("Tên dự án không hợp lệ.")]
     InvalidName,
     #[error("invalid git url")]
     InvalidGitUrl,

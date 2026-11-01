@@ -15,10 +15,14 @@ pub(crate) fn summarize(
     let mut summaries = Vec::new();
     let symbol_count = files.iter().map(|file| file.symbols.len()).sum::<usize>();
     let exact_calls = count_calls(edges, Provenance::Exact);
-    let inferred_calls = count_calls(edges, Provenance::Inferred);
+    let route_count = files.iter().map(|file| file.routes.len()).sum::<usize>();
+    let http_count = files
+        .iter()
+        .map(|file| file.http_calls.len())
+        .sum::<usize>();
 
     let mut source_body = format!(
-        "source {source_label}\nfiles {} | symbols {symbol_count} | calls exact {exact_calls} inferred {inferred_calls} | unresolved {unresolved_calls} | ambiguous {ambiguous_calls}\n",
+        "source {source_label}\nfiles {} | symbols {symbol_count} | calls exact {exact_calls} | unresolved {unresolved_calls} | ambiguous {ambiguous_calls} | routes {route_count} | http {http_count}\n",
         files.len()
     );
     for file in files {
@@ -60,6 +64,23 @@ pub(crate) fn summarize(
                 symbol.start_line
             ));
         }
+        for route in &file.routes {
+            body.push_str(&format!(
+                "route {} {} @ {}\n",
+                route.http_methods.join("|"),
+                route.template,
+                route.line
+            ));
+        }
+        for http in &file.http_calls {
+            body.push_str(&format!(
+                "http {} {} {} @ {}\n",
+                http.client,
+                http.method.as_deref().unwrap_or("-"),
+                http.url_literal,
+                http.line
+            ));
+        }
         summaries.push(make_summary(SummaryLevel::Module, &module.id, body));
 
         for symbol in file
@@ -70,7 +91,7 @@ pub(crate) fn summarize(
             summaries.push(make_summary(
                 SummaryLevel::Symbol,
                 &symbol.id,
-                symbol_body(symbol, edges),
+                symbol_body(symbol, edges, file),
             ));
         }
     }
@@ -78,7 +99,7 @@ pub(crate) fn summarize(
     summaries
 }
 
-fn symbol_body(symbol: &crate::model::Symbol, edges: &[Edge]) -> String {
+fn symbol_body(symbol: &crate::model::Symbol, edges: &[Edge], file: &ExtractedFile) -> String {
     let mut body = format!(
         "{} {} @ {}:{}-{}\n",
         symbol.kind.as_str(),
@@ -87,6 +108,17 @@ fn symbol_body(symbol: &crate::model::Symbol, edges: &[Edge]) -> String {
         symbol.start_line,
         symbol.end_line
     );
+    for route in file
+        .routes
+        .iter()
+        .filter(|route| route.symbol_id == symbol.id)
+    {
+        body.push_str(&format!(
+            "route {} {}\n",
+            route.http_methods.join("|"),
+            route.template
+        ));
+    }
     let mut calls: Vec<&Edge> = edges
         .iter()
         .filter(|edge| edge.kind == EdgeKind::Calls && edge.from_id == symbol.id)
@@ -94,15 +126,27 @@ fn symbol_body(symbol: &crate::model::Symbol, edges: &[Edge]) -> String {
     calls.sort_by_key(|edge| edge.evidence_line);
     if calls.is_empty() {
         body.push_str("calls none\n");
-        return body;
+    } else {
+        for edge in calls {
+            body.push_str(&format!(
+                "calls {} {} {:.2} {}\n",
+                edge.to_name,
+                edge.provenance.as_str(),
+                edge.confidence,
+                edge.detail
+            ));
+        }
     }
-    for edge in calls {
+    for http in file
+        .http_calls
+        .iter()
+        .filter(|http| http.caller_id == symbol.id)
+    {
         body.push_str(&format!(
-            "calls {} {} {:.2} {}\n",
-            edge.to_name,
-            edge.provenance.as_str(),
-            edge.confidence,
-            edge.detail
+            "http {} {} {}\n",
+            http.client,
+            http.method.as_deref().unwrap_or("-"),
+            http.url_literal
         ));
     }
     body
