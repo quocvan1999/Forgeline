@@ -94,6 +94,7 @@ fn lock<'a>(state: &'a State<'a, AppState>) -> Result<std::sync::MutexGuard<'a, 
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = forgeline_core::default_data_dir();
             std::fs::create_dir_all(&data_dir)?;

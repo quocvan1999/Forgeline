@@ -1,3 +1,4 @@
+import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import {
   addSource,
@@ -84,6 +85,27 @@ export function App() {
       setError(messageOf(reason));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function chooseLocalFolder() {
+    setError(null);
+    try {
+      const selectedPath = await open({
+        directory: true,
+        multiple: false,
+        title: "Chọn thư mục nguồn",
+        defaultPath: sourceLocation || undefined,
+      });
+      if (typeof selectedPath !== "string" || selectedPath.length === 0) {
+        return;
+      }
+      setSourceLocation(selectedPath);
+      if (sourceName.trim() === "") {
+        setSourceName(folderName(selectedPath));
+      }
+    } catch (reason) {
+      setError(messageOf(reason));
     }
   }
 
@@ -267,18 +289,41 @@ export function App() {
                 <select
                   aria-label="Loại nguồn"
                   value={sourceKind}
-                  onChange={(event) => setSourceKind(event.target.value)}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setSourceKind(next);
+                    if (next === "local_path") {
+                      setSourceLocation("");
+                    }
+                  }}
                 >
                   <option value="local_path">Đường dẫn cục bộ</option>
                   <option value="git_url">URL git</option>
                 </select>
-                <input
-                  aria-label="Vị trí nguồn"
-                  placeholder={sourceKind === "git_url" ? "https://github.com/org/repo.git" : "/đường/dẫn/repo"}
-                  value={sourceLocation}
-                  onChange={(event) => setSourceLocation(event.target.value)}
-                />
-                <button type="submit" disabled={busy}>
+                {sourceKind === "local_path" ? (
+                  <div className="path-picker">
+                    <input
+                      aria-label="Thư mục nguồn"
+                      placeholder="Chưa chọn thư mục"
+                      value={sourceLocation}
+                      readOnly
+                      onClick={() => {
+                        void chooseLocalFolder();
+                      }}
+                    />
+                    <button type="button" disabled={busy} onClick={() => void chooseLocalFolder()}>
+                      Chọn thư mục
+                    </button>
+                  </div>
+                ) : (
+                  <input
+                    aria-label="URL git"
+                    placeholder="https://github.com/org/repo.git"
+                    value={sourceLocation}
+                    onChange={(event) => setSourceLocation(event.target.value)}
+                  />
+                )}
+                <button type="submit" disabled={busy || sourceName.trim() === "" || sourceLocation.trim() === ""}>
                   Thêm nguồn
                 </button>
               </form>
@@ -288,6 +333,12 @@ export function App() {
       </main>
     </div>
   );
+}
+
+function folderName(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const parts = trimmed.split(/[\\/]/).filter((part) => part.length > 0);
+  return parts[parts.length - 1] ?? "source";
 }
 
 function messageOf(reason: unknown): string {
