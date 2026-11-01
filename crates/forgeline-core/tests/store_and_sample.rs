@@ -72,6 +72,17 @@ fn indexes_csharp_react_sample_with_exact_callers_only() {
     assert!(!run.is_empty());
     assert!(run[0].callers.iter().all(|edge| edge.provenance == "exact"));
 
+    let find = store.callers(&project.id, "Find").unwrap();
+    assert!(
+        find.iter().any(|group| {
+            group
+                .callers
+                .iter()
+                .any(|edge| edge.detail.contains("roslyn") || edge.detail == "import")
+        }) || indexed.status_message.is_some(),
+        "Roslyn Find edge or Vietnamese SDK notice"
+    );
+
     let get_item = store.callers(&project.id, "getItem").unwrap();
     assert!(get_item[0]
         .callers
@@ -81,6 +92,11 @@ fn indexes_csharp_react_sample_with_exact_callers_only() {
     let reports = store.explain(&project.id, "App").unwrap();
     assert!(!reports.is_empty());
     assert!(reports[0].symbol.kind == "component" || reports[0].symbol.name == "App");
+
+    let overview = store.source_overview(&source.id, None, None, None).unwrap();
+    assert!(!overview.nodes.is_empty());
+    let json = store.export_source_overview_json(&source.id, None).unwrap();
+    assert!(json.contains("sourceId"));
 
     let stats = store.project_stats(&project.id).unwrap();
     assert!(stats.summary.contains("calls exact"));

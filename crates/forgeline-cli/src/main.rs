@@ -34,6 +34,17 @@ enum Command {
     Explain { symbol: String },
     /// List exact callers of a symbol.
     Callers { symbol: String },
+    /// Export a per-source overview graph as JSON (exact edges only).
+    Overview {
+        /// Source name within the project (folder name used at index time).
+        source: String,
+        /// Optional folder or file path to drill into.
+        #[arg(long)]
+        focus: Option<String>,
+        /// Write JSON to this path instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -78,6 +89,21 @@ fn run() -> Result<ExitCode, CoreError> {
             }
             for group in &groups {
                 print_callers(group);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Overview { source, focus, out } => {
+            let project = store.require_project(cli.project.as_deref())?;
+            let sources = store.list_sources(&project.id)?;
+            let matched = sources
+                .iter()
+                .find(|item| item.name == source || item.id == source)
+                .ok_or(CoreError::SourceNotFound)?;
+            let json = store.export_source_overview_json(&matched.id, focus.as_deref())?;
+            if let Some(path) = out {
+                std::fs::write(path, json)?;
+            } else {
+                println!("{json}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -156,6 +182,9 @@ fn print_index(project: &str, source: &Source) {
         unresolved = source.unresolved_call_count,
         ambiguous = source.ambiguous_call_count
     );
+    if let Some(notice) = &source.status_message {
+        println!("chú ý: {notice}");
+    }
 }
 
 fn print_stats(stats: &ProjectStats, sources: &[Source]) {
@@ -170,6 +199,11 @@ fn print_stats(stats: &ProjectStats, sources: &[Source]) {
             exact = source.exact_call_count,
             unresolved = source.unresolved_call_count
         );
+        if let Some(notice) = &source.status_message {
+            if source.status == "ready" {
+                println!("  chú ý: {notice}");
+            }
+        }
     }
 }
 

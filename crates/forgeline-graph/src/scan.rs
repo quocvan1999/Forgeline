@@ -5,7 +5,7 @@ use walkdir::WalkDir;
 
 use crate::extract::extract_file;
 use crate::model::{language_for_path, ExtractedFile, SourceGraph};
-use crate::resolve::resolve_graph;
+use crate::resolve::{resolve_graph, resolve_graph_at};
 use crate::GraphError;
 use crate::{EXTRACTOR_VERSION, MAX_FILE_BYTES, MAX_SOURCE_FILES};
 
@@ -42,54 +42,31 @@ pub fn index_contents(
     inputs: &[FileInput<'_>],
     previous: &[ExtractedFile],
 ) -> Result<SourceGraph, GraphError> {
-    if inputs.len() > MAX_SOURCE_FILES {
-        return Err(GraphError::TooManyFiles {
-            limit: MAX_SOURCE_FILES,
-        });
-    }
-    let mut previous_by_path: HashMap<&str, &ExtractedFile> = HashMap::new();
-    for file in previous {
-        previous_by_path.insert(file.relative_path.as_str(), file);
-    }
-
-    let mut files = Vec::with_capacity(inputs.len());
-    let mut reindexed_files = 0u32;
-    let mut reused_files = 0u32;
-    for input in inputs {
-        let relative_path = input.relative_path.replace('\\', "/");
-        if let Some(prev) = previous_by_path.get(relative_path.as_str()) {
-            let hash = crate::content_hash(input.contents.as_bytes());
-            let same_source = prev
-                .symbols
-                .iter()
-                .all(|symbol| symbol.id.starts_with(&format!("{source_id}::")));
-            if same_source
-                && prev.extractor_version == EXTRACTOR_VERSION
-                && prev.content_hash == hash
-            {
-                files.push((*prev).clone());
-                reused_files += 1;
-                continue;
-            }
-        }
-        files.push(extract_file(source_id, &relative_path, input.contents)?);
-        reindexed_files += 1;
-    }
-    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-
-    let current: HashSet<&str> = files
-        .iter()
-        .map(|file| file.relative_path.as_str())
-        .collect();
-    let removed_files = u32::try_from(
-        previous
-            .iter()
-            .filter(|file| !current.contains(file.relative_path.as_str()))
-            .count(),
-    )
-    .unwrap_or(u32::MAX);
-
+    let (files, reindexed_files, reused_files, removed_files) =
+        extract_inputs(source_id, inputs, previous)?;
     Ok(resolve_graph(
+        source_id,
+        source_label,
+        files,
+        reindexed_files,
+        reused_files,
+        removed_files,
+        0,
+    ))
+}
+
+/// Like [`index_contents`] but resolves JS/TS against `root` configs and runs Roslyn for C#.
+pub fn index_contents_at(
+    root: &Path,
+    source_id: &str,
+    source_label: &str,
+    inputs: &[FileInput<'_>],
+    previous: &[ExtractedFile],
+) -> Result<SourceGraph, GraphError> {
+    let (files, reindexed_files, reused_files, removed_files) =
+        extract_inputs(source_id, inputs, previous)?;
+    Ok(resolve_graph_at(
+        Some(root),
         source_id,
         source_label,
         files,
@@ -181,9 +158,64 @@ pub fn index_path(
             contents,
         })
         .collect();
-    let mut graph = index_contents(source_id, source_label, &inputs, previous)?;
+    let mut graph = index_contents_at(root, source_id, source_label, &inputs, previous)?;
     graph.skipped_files = skipped_files;
     Ok(graph)
+}
+
+fn extract_inputs(
+    source_id: &str,
+    inputs: &[FileInput<'_>],
+    previous: &[ExtractedFile],
+) -> Result<(Vec<ExtractedFile>, u32, u32, u32), GraphError> {
+    if inputs.len() > MAX_SOURCE_FILES {
+        return Err(GraphError::TooManyFiles {
+            limit: MAX_SOURCE_FILES,
+        });
+    }
+    let mut previous_by_path: HashMap<&str, &ExtractedFile> = HashMap::new();
+    for file in previous {
+        previous_by_path.insert(file.relative_path.as_str(), file);
+    }
+
+    let mut files = Vec::with_capacity(inputs.len());
+    let mut reindexed_files = 0u32;
+    let mut reused_files = 0u32;
+    for input in inputs {
+        let relative_path = input.relative_path.replace('\\', "/");
+        if let Some(prev) = previous_by_path.get(relative_path.as_str()) {
+            let hash = crate::content_hash(input.contents.as_bytes());
+            let same_source = prev
+                .symbols
+                .iter()
+                .all(|symbol| symbol.id.starts_with(&format!("{source_id}::")));
+            if same_source
+                && prev.extractor_version == EXTRACTOR_VERSION
+                && prev.content_hash == hash
+            {
+                files.push((*prev).clone());
+                reused_files += 1;
+                continue;
+            }
+        }
+        files.push(extract_file(source_id, &relative_path, input.contents)?);
+        reindexed_files += 1;
+    }
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+    let current: HashSet<&str> = files
+        .iter()
+        .map(|file| file.relative_path.as_str())
+        .collect();
+    let removed_files = u32::try_from(
+        previous
+            .iter()
+            .filter(|file| !current.contains(file.relative_path.as_str()))
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+
+    Ok((files, reindexed_files, reused_files, removed_files))
 }
 
 fn keep_directory(entry: &walkdir::DirEntry) -> bool {

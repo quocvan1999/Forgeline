@@ -13,7 +13,7 @@ Phạm vi giai đoạn 1: kho dự án cục bộ và đồ thị cú pháp **ex
 - [x] Phân tích lại theo hash; id ký hiệu namespaced theo nguồn
 - [x] Tóm tắt project → source → module → symbol (một ngôn ngữ)
 - [x] CLI: `index`, `stats`, `explain`, `callers` (không còn `--include-inferred`)
-- [x] Desktop: dự án, nguồn, phân tích, thống kê exact / unresolved
+- [x] Desktop: dự án, nguồn, phân tích, thống kê exact / unresolved, Sơ đồ
 - [ ] Truy vấn đường đi chỉ dùng cạnh exact
 - [ ] Cắt đồ thị con exact theo ngân sách token
 - [ ] Cạnh xuyên nguồn: API client → route, schema, config (kind đã dành chỗ)
@@ -21,9 +21,10 @@ Phạm vi giai đoạn 1: kho dự án cục bộ và đồ thị cú pháp **ex
 
 ## Giai đoạn 2 — lớp chính xác
 
-- [ ] **C#:** Roslyn và/hoặc SCIP để gắn kiểu, overload, lời gọi qua interface
-- [ ] **JS/TS:** TypeScript compiler / scip-typescript cho import resolution và kiểu
-- [ ] `export default`, re-export, path mapping
+- [x] **C#:** Roslyn helper (`tools/forgeline-roslyn`) + merge exact edges
+- [x] **JS/TS:** module resolution (paths, re-export, JSX) trong Rust
+- [x] Sơ đồ tổng quan per-source (desktop + CLI export JSON)
+- [ ] Overload / interface dispatch sâu hơn; scip-typescript tùy chọn
 - [ ] Liên kết xuyên nguồn trên lớp chính xác (không đoán tên)
 - [ ] API agent đọc từ tầng project xuống, dừng khi hết ngân sách
 

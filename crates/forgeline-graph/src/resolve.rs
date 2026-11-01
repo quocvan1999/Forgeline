@@ -1,15 +1,18 @@
 //! Call resolution policy.
 //!
 //! Only exact edges are stored: lexical/same-scope, import/using bindings,
-//! same-class method receivers (`this`/`base`/`self`), namespace imports, and
-//! fully-qualified names that match exactly one symbol. Everything else is an
-//! unresolved reference — counted, never turned into an edge.
+//! same-class method receivers (`this`/`base`/`self`), namespace imports,
+//! fully-qualified names, JS/TS module exports (incl. re-exports), and Roslyn
+//! semantic edges merged after this pass. Everything else is unresolved.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::model::{
     Edge, EdgeKind, ExtractedFile, Import, Language, Provenance, SourceGraph, Symbol, SymbolKind,
 };
+use crate::modules::{is_ecma, module_level_symbol, resolve_export, ModuleResolver, ResolveResult};
+use crate::roslyn::{merge_roslyn_edges, RoslynStatus};
 use crate::summarize::summarize;
 use crate::CONFIDENCE_EXACT;
 
@@ -28,6 +31,34 @@ pub(crate) fn resolve_graph(
     removed_files: u32,
     skipped_files: u32,
 ) -> SourceGraph {
+    resolve_graph_at(
+        None,
+        source_id,
+        source_label,
+        files,
+        reindexed_files,
+        reused_files,
+        removed_files,
+        skipped_files,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_graph_at(
+    root: Option<&Path>,
+    source_id: &str,
+    source_label: &str,
+    files: Vec<ExtractedFile>,
+    reindexed_files: u32,
+    reused_files: u32,
+    removed_files: u32,
+    skipped_files: u32,
+) -> SourceGraph {
+    let resolver = match root {
+        Some(path) => ModuleResolver::from_root(path, &files),
+        None => ModuleResolver::from_files_only(&files),
+    };
+
     let mut edges = Vec::new();
     let mut unresolved_calls = 0u32;
     let mut ambiguous_calls = 0u32;
@@ -58,23 +89,39 @@ pub(crate) fn resolve_graph(
 
     for file in &files {
         for import in &file.imports {
-            if let Some(target) = resolve_import_symbol(file, import, &files) {
-                edges.push(Edge {
-                    kind: EdgeKind::Imports,
-                    from_id: import.scope_id.clone(),
-                    to_id: Some(target.id.clone()),
-                    to_name: target.name.clone(),
-                    provenance: Provenance::Exact,
-                    confidence: CONFIDENCE_EXACT,
-                    evidence_path: import.relative_path.clone(),
-                    evidence_line: import.line,
-                    detail: "import".to_string(),
-                });
+            match resolve_import_binding(file, import, &files, &resolver) {
+                ImportBind::Symbol(target) => {
+                    edges.push(Edge {
+                        kind: EdgeKind::Imports,
+                        from_id: import.scope_id.clone(),
+                        to_id: Some(target.id.clone()),
+                        to_name: target.name.clone(),
+                        provenance: Provenance::Exact,
+                        confidence: CONFIDENCE_EXACT,
+                        evidence_path: import.relative_path.clone(),
+                        evidence_line: import.line,
+                        detail: "import".to_string(),
+                    });
+                }
+                ImportBind::External(name) => {
+                    edges.push(Edge {
+                        kind: EdgeKind::ExternalModule,
+                        from_id: import.scope_id.clone(),
+                        to_id: None,
+                        to_name: name,
+                        provenance: Provenance::Exact,
+                        confidence: CONFIDENCE_EXACT,
+                        evidence_path: import.relative_path.clone(),
+                        evidence_line: import.line,
+                        detail: "external".to_string(),
+                    });
+                }
+                ImportBind::None => {}
             }
         }
 
         for call in &file.calls {
-            match resolve_call(file, call, &files, &symbols) {
+            match resolve_call(file, call, &files, &symbols, &resolver) {
                 CallDecision::Exact(target_id, detail) => {
                     if let Some(target) = by_id.get(target_id.as_str()) {
                         edges.push(call_edge(call, target, detail));
@@ -110,7 +157,7 @@ pub(crate) fn resolve_graph(
         ambiguous_calls,
     );
 
-    SourceGraph {
+    let mut graph = SourceGraph {
         source_id: source_id.to_string(),
         source_label: source_label.to_string(),
         files,
@@ -122,7 +169,15 @@ pub(crate) fn resolve_graph(
         reused_files,
         removed_files,
         skipped_files,
+        resolver_notice: None,
+    };
+
+    if let Some(path) = root {
+        let status: RoslynStatus = merge_roslyn_edges(&mut graph, path);
+        graph.resolver_notice = status.notice_vi;
     }
+
+    graph
 }
 
 fn call_edge(call: &crate::model::CallSite, target: &Symbol, detail: &str) -> Edge {
@@ -139,17 +194,82 @@ fn call_edge(call: &crate::model::CallSite, target: &Symbol, detail: &str) -> Ed
     }
 }
 
+enum ImportBind<'a> {
+    Symbol(&'a Symbol),
+    External(String),
+    None,
+}
+
+fn resolve_import_binding<'a>(
+    file: &'a ExtractedFile,
+    import: &Import,
+    files: &'a [ExtractedFile],
+    resolver: &ModuleResolver,
+) -> ImportBind<'a> {
+    match file.language {
+        Language::CSharp => resolve_csharp_using(import, files)
+            .map(ImportBind::Symbol)
+            .unwrap_or(ImportBind::None),
+        lang if is_ecma(lang) => {
+            match resolver.resolve_specifier(&file.relative_path, &import.specifier) {
+                ResolveResult::External(name) => ImportBind::External(name),
+                ResolveResult::Unresolved => ImportBind::None,
+                ResolveResult::File(path) => {
+                    let Some(target) = files.iter().find(|item| item.relative_path == path) else {
+                        return ImportBind::None;
+                    };
+                    match &import.imported_name {
+                        None => target
+                            .symbols
+                            .iter()
+                            .find(|symbol| symbol.kind == SymbolKind::Module)
+                            .map(ImportBind::Symbol)
+                            .unwrap_or(ImportBind::None),
+                        Some(name) if name == "default" => {
+                            resolve_export(files, resolver, target, "default", 0)
+                                .or_else(|| module_level_symbol(target, &import.local_name))
+                                .map(ImportBind::Symbol)
+                                .unwrap_or(ImportBind::None)
+                        }
+                        Some(name) => resolve_export(files, resolver, target, name, 0)
+                            .map(ImportBind::Symbol)
+                            .unwrap_or(ImportBind::None),
+                    }
+                }
+            }
+        }
+        _ => {
+            // Python keeps the previous relative-only resolver via candidate paths.
+            let target = python_resolve_specifier(&file.relative_path, &import.specifier, files);
+            match (target, &import.imported_name) {
+                (Some(target), Some(name)) if name != "default" => {
+                    module_level_symbol(target, name)
+                        .map(ImportBind::Symbol)
+                        .unwrap_or(ImportBind::None)
+                }
+                (Some(target), None) => target
+                    .symbols
+                    .iter()
+                    .find(|symbol| symbol.kind == SymbolKind::Module)
+                    .map(ImportBind::Symbol)
+                    .unwrap_or(ImportBind::None),
+                _ => ImportBind::None,
+            }
+        }
+    }
+}
+
 fn resolve_call(
     file: &ExtractedFile,
     call: &crate::model::CallSite,
     files: &[ExtractedFile],
     symbols: &[&Symbol],
+    resolver: &ModuleResolver,
 ) -> CallDecision {
     if let Some(receiver) = &call.receiver {
         if is_method_receiver(receiver) {
             return resolve_method(file, call);
         }
-        // Fully qualified type or namespace prefix: Namespace.Type.Member
         if let Some(decision) = resolve_fqn(symbols, receiver, &call.callee_name) {
             return decision;
         }
@@ -157,15 +277,15 @@ fn resolve_call(
             import.imported_name.is_none()
                 && receiver_matches_namespace(receiver, &import.local_name)
         }) {
-            return match namespace_member(file, import, &call.callee_name, files) {
+            return match namespace_member(file, import, &call.callee_name, files, resolver) {
                 Some(target) => CallDecision::Exact(target.id.clone(), "namespace"),
                 None => CallDecision::Unresolved,
             };
         }
-        // C# using of a type name used as receiver: `Helper.Run()` after `using ...`
-        // when Helper is a same-source type symbol.
-        if let Some(decision) = resolve_type_member(symbols, receiver, &call.callee_name) {
-            return decision;
+        if file.language == Language::CSharp {
+            if let Some(decision) = resolve_type_member(symbols, receiver, &call.callee_name) {
+                return decision;
+            }
         }
         return CallDecision::Unresolved;
     }
@@ -180,15 +300,12 @@ fn resolve_call(
     if let Some(import) =
         visible_imports(file, &call.caller_id).find(|import| import.local_name == call.callee_name)
     {
-        return match resolve_import_symbol(file, import, files) {
-            Some(target) => CallDecision::Exact(target.id.clone(), "import"),
-            None => CallDecision::Unresolved,
+        return match resolve_import_binding(file, import, files, resolver) {
+            ImportBind::Symbol(target) => CallDecision::Exact(target.id.clone(), "import"),
+            ImportBind::External(_) | ImportBind::None => CallDecision::Unresolved,
         };
     }
 
-    // Fully qualified bare callee (contains '.') that uniquely matches.
-    // A simple name must not match via qualified_name — that would reintroduce
-    // inferred cross-file edges under another name.
     if call.callee_name.contains('.') {
         let fqn_hits: Vec<&Symbol> = symbols
             .iter()
@@ -261,7 +378,6 @@ fn resolve_fqn(symbols: &[&Symbol], receiver: &str, member: &str) -> Option<Call
 }
 
 fn resolve_type_member(symbols: &[&Symbol], type_name: &str, member: &str) -> Option<CallDecision> {
-    // Exact type name (not dotted) matching one type symbol in the source.
     if type_name.contains('.') {
         return None;
     }
@@ -374,35 +490,7 @@ fn module_id(file: &ExtractedFile) -> Option<&str> {
         .map(|symbol| symbol.id.as_str())
 }
 
-fn resolve_import_symbol<'a>(
-    file: &ExtractedFile,
-    import: &Import,
-    files: &'a [ExtractedFile],
-) -> Option<&'a Symbol> {
-    match file.language {
-        Language::CSharp => resolve_csharp_using(import, files),
-        _ => {
-            let target =
-                resolve_specifier(&file.relative_path, &import.specifier, file.language, files)?;
-            match &import.imported_name {
-                Some(name) if name == "default" => {
-                    // Prefer a single exported component/function of the same local name.
-                    module_level_symbol(target, &import.local_name)
-                        .or_else(|| module_level_symbol(target, name))
-                }
-                Some(name) => module_level_symbol(target, name),
-                None => target
-                    .symbols
-                    .iter()
-                    .find(|symbol| symbol.kind == SymbolKind::Module),
-            }
-        }
-    }
-}
-
 fn resolve_csharp_using<'a>(import: &Import, files: &'a [ExtractedFile]) -> Option<&'a Symbol> {
-    // Resolve `using Models;` / `using Api.Controllers;` to a namespace symbol,
-    // or a same-source type whose qualified name equals the specifier.
     let mut matches: Vec<&Symbol> = files
         .iter()
         .flat_map(|file| file.symbols.iter())
@@ -426,9 +514,9 @@ fn namespace_member<'a>(
     import: &Import,
     member: &str,
     files: &'a [ExtractedFile],
+    resolver: &ModuleResolver,
 ) -> Option<&'a Symbol> {
     if file.language == Language::CSharp {
-        // Member of imported namespace/type across files in this source.
         let mut hits: Vec<&Symbol> = files
             .iter()
             .flat_map(|item| item.symbols.iter())
@@ -452,32 +540,22 @@ fn namespace_member<'a>(
             _ => None,
         };
     }
-    let target = resolve_specifier(&file.relative_path, &import.specifier, file.language, files)?;
-    module_level_symbol(target, member)
-}
-
-fn module_level_symbol<'a>(file: &'a ExtractedFile, name: &str) -> Option<&'a Symbol> {
-    let module_id = module_id(file)?;
-    let mut matches = file.symbols.iter().filter(|symbol| {
-        symbol.name == name
-            && symbol.parent_id.as_deref() == Some(module_id)
-            && symbol.kind != SymbolKind::Module
-    });
-    let first = matches.next()?;
-    if matches.next().is_some() {
-        None
-    } else {
-        Some(first)
+    match resolver.resolve_specifier(&file.relative_path, &import.specifier) {
+        ResolveResult::File(path) => {
+            let target = files.iter().find(|item| item.relative_path == path)?;
+            resolve_export(files, resolver, target, member, 0)
+                .or_else(|| module_level_symbol(target, member))
+        }
+        _ => None,
     }
 }
 
-fn resolve_specifier<'a>(
+fn python_resolve_specifier<'a>(
     from_file: &str,
     specifier: &str,
-    language: Language,
     files: &'a [ExtractedFile],
 ) -> Option<&'a ExtractedFile> {
-    let candidates = candidate_paths(from_file, specifier, language);
+    let candidates = python_candidates(from_file, specifier);
     let mut matched = files.iter().filter(|file| {
         candidates
             .iter()
@@ -491,44 +569,38 @@ fn resolve_specifier<'a>(
     }
 }
 
-fn candidate_paths(from_file: &str, specifier: &str, language: Language) -> Vec<String> {
-    match language {
-        Language::CSharp => Vec::new(),
-        Language::Python => python_candidates(from_file, specifier),
-        Language::JavaScript | Language::TypeScript | Language::Tsx => {
-            javascript_candidates(from_file, specifier)
-        }
-    }
-}
-
 fn python_candidates(from_file: &str, specifier: &str) -> Vec<String> {
     let spec = specifier.trim();
     if spec.is_empty() {
         return Vec::new();
     }
-    let dir = parent_path(from_file);
+    let dir = crate::modules::parent_path(from_file);
     let mut seeds = Vec::new();
     if spec.starts_with('.') {
         let dots = spec.chars().take_while(|ch| *ch == '.').count();
         let rest = spec.trim_start_matches('.');
         let mut base = dir;
         for _ in 1..dots {
-            base = parent_path(&base);
+            base = crate::modules::parent_path(&base);
         }
         let joined = if rest.is_empty() {
             base
         } else {
-            join_path(&base, &rest.replace('.', "/"))
+            crate::modules::join_path(&base, &rest.replace('.', "/"))
         };
-        seeds.push(normalize_path(&joined));
+        seeds.push(crate::modules::normalize_path(&joined));
     } else {
         let dotted = spec.replace('.', "/");
-        seeds.push(normalize_path(&join_path(&dir, &dotted)));
-        seeds.push(normalize_path(&dotted));
+        seeds.push(crate::modules::normalize_path(&crate::modules::join_path(
+            &dir, &dotted,
+        )));
+        seeds.push(crate::modules::normalize_path(&dotted));
         let mut cursor = dir;
         while !cursor.is_empty() {
-            seeds.push(normalize_path(&join_path(&cursor, &dotted)));
-            let parent = parent_path(&cursor);
+            seeds.push(crate::modules::normalize_path(&crate::modules::join_path(
+                &cursor, &dotted,
+            )));
+            let parent = crate::modules::parent_path(&cursor);
             if parent == cursor {
                 break;
             }
@@ -546,61 +618,4 @@ fn python_candidates(from_file: &str, specifier: &str) -> Vec<String> {
         out.push(format!("{seed}/__init__.py"));
     }
     out
-}
-
-fn javascript_candidates(from_file: &str, specifier: &str) -> Vec<String> {
-    if !specifier.starts_with('.') {
-        return Vec::new();
-    }
-    let joined = normalize_path(&join_path(&parent_path(from_file), specifier));
-    let stem = strip_known_extension(&joined);
-    let mut out = Vec::new();
-    for ext in [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] {
-        out.push(format!("{stem}{ext}"));
-    }
-    for ext in [".ts", ".tsx", ".js", ".jsx"] {
-        out.push(format!("{stem}/index{ext}"));
-    }
-    out
-}
-
-fn strip_known_extension(path: &str) -> String {
-    for ext in [".tsx", ".ts", ".jsx", ".mjs", ".cjs", ".js"] {
-        if let Some(stripped) = path.strip_suffix(ext) {
-            return stripped.to_string();
-        }
-    }
-    path.to_string()
-}
-
-fn parent_path(path: &str) -> String {
-    match path.rfind('/') {
-        Some(index) => path[..index].to_string(),
-        None => String::new(),
-    }
-}
-
-fn join_path(base: &str, rel: &str) -> String {
-    if base.is_empty() {
-        rel.to_string()
-    } else if rel.is_empty() {
-        base.to_string()
-    } else {
-        format!("{base}/{rel}")
-    }
-}
-
-fn normalize_path(path: &str) -> String {
-    let mut stack = Vec::new();
-    for part in path.split(['/', '\\']) {
-        if part.is_empty() || part == "." {
-            continue;
-        }
-        if part == ".." {
-            stack.pop();
-        } else {
-            stack.push(part);
-        }
-    }
-    stack.join("/")
 }

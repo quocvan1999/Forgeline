@@ -18,12 +18,20 @@ pub(crate) fn walk(node: Node<'_>, ctx: &mut Ctx<'_>) {
             define_field(node, ctx);
         }
         "import_statement" => record_import(node, ctx),
+        "export_statement" => {
+            record_export(node, ctx);
+            walk_children(node, ctx, walk);
+        }
         "call_expression" => {
             record_call(node, ctx);
             walk_children(node, ctx, walk);
         }
         "new_expression" => {
             record_new(node, ctx);
+            walk_children(node, ctx, walk);
+        }
+        "jsx_opening_element" | "jsx_self_closing_element" => {
+            record_jsx(node, ctx);
             walk_children(node, ctx, walk);
         }
         "arrow_function" | "function_expression" => walk_children(node, ctx, walk),
@@ -238,6 +246,194 @@ fn record_import(node: Node<'_>, ctx: &mut Ctx<'_>) {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+fn record_export(node: Node<'_>, ctx: &mut Ctx<'_>) {
+    let line = line_number(node.start_position().row);
+    let from_specifier = named_child(node, "string")
+        .map(|source| unquote(&node_text(source, ctx.source)))
+        .filter(|spec| !spec.is_empty());
+
+    // `export * from "mod"` / `export * as ns from "mod"`
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "export_clause" => record_export_clause(child, from_specifier.clone(), line, ctx),
+            "*" => {
+                // star token may not be named; handled below via namespace_export / bare.
+            }
+            "namespace_export" => {
+                if let Some(ident) = named_child(child, "identifier") {
+                    let name = node_text(ident, ctx.source);
+                    ctx.add_export(
+                        name.clone(),
+                        Some(name),
+                        from_specifier.clone(),
+                        false,
+                        line,
+                    );
+                } else if from_specifier.is_some() {
+                    ctx.add_export(String::new(), None, from_specifier.clone(), true, line);
+                }
+            }
+            "function_declaration"
+            | "class_declaration"
+            | "abstract_class_declaration"
+            | "lexical_declaration"
+            | "variable_declaration" => {
+                // `export function Foo` / `export class Foo` / `export const Foo =`
+                record_inline_export_decl(child, line, ctx);
+            }
+            "identifier" if from_specifier.is_none() => {
+                // rare: export identifier;
+                let name = node_text(child, ctx.source);
+                ctx.add_export(name.clone(), Some(name), None, false, line);
+            }
+            _ => {}
+        }
+    }
+
+    // Tree-sitter often represents `export * from` without a namespace_export node.
+    let text = node_text(node, ctx.source);
+    if text.contains("export *") && from_specifier.is_some() {
+        let already_star = ctx
+            .exports
+            .iter()
+            .any(|item| item.line == line && item.star);
+        if !already_star {
+            ctx.add_export(String::new(), None, from_specifier, true, line);
+        }
+    }
+}
+
+fn record_export_clause(
+    node: Node<'_>,
+    from_specifier: Option<String>,
+    line: u32,
+    ctx: &mut Ctx<'_>,
+) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() != "export_specifier" {
+            continue;
+        }
+        let Some(name_node) = child.child_by_field_name("name") else {
+            continue;
+        };
+        let local = node_text(name_node, ctx.source);
+        let exported = child
+            .child_by_field_name("alias")
+            .map(|alias| node_text(alias, ctx.source))
+            .filter(|alias| !alias.is_empty())
+            .unwrap_or_else(|| local.clone());
+        ctx.add_export(exported, Some(local), from_specifier.clone(), false, line);
+    }
+}
+
+fn record_inline_export_decl(node: Node<'_>, line: u32, ctx: &mut Ctx<'_>) {
+    match node.kind() {
+        "function_declaration" | "class_declaration" | "abstract_class_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = node_text(name_node, ctx.source);
+                if !name.is_empty() {
+                    ctx.add_export(name.clone(), Some(name), None, false, line);
+                }
+            }
+        }
+        "lexical_declaration" | "variable_declaration" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() != "variable_declarator" {
+                    continue;
+                }
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    if name_node.kind() == "identifier" {
+                        let name = node_text(name_node, ctx.source);
+                        if !name.is_empty() {
+                            ctx.add_export(name.clone(), Some(name), None, false, line);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn record_jsx(node: Node<'_>, ctx: &mut Ctx<'_>) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let name = jsx_component_name(name_node, ctx.source);
+    let Some(name) = name else {
+        return;
+    };
+    // DOM tags stay unresolved by design (lowercase). Only PascalCase components.
+    if !looks_like_component(&name) {
+        return;
+    }
+    let line = line_number(node.start_position().row);
+    // Member form: <Foo.Bar /> — treat Foo as namespace receiver.
+    if let Some((receiver, callee)) = name.rsplit_once('.') {
+        ctx.add_call(Some(receiver.to_string()), callee.to_string(), line, None);
+    } else {
+        ctx.add_call(None, name, line, None);
+    }
+}
+
+fn jsx_component_name(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" | "jsx_identifier" => {
+            let name = node_text(node, source);
+            if name.is_empty() {
+                None
+            } else {
+                Some(name)
+            }
+        }
+        "member_expression" | "jsx_member_expression" => {
+            let mut parts = Vec::new();
+            collect_jsx_member(node, source, &mut parts);
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("."))
+            }
+        }
+        _ => {
+            let text = node_text(node, source);
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+    }
+}
+
+fn collect_jsx_member(node: Node<'_>, source: &str, parts: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" | "jsx_identifier" | "property_identifier" => {
+            parts.push(node_text(node, source));
+        }
+        "member_expression" | "jsx_member_expression" => {
+            if let Some(object) = node.child_by_field_name("object") {
+                collect_jsx_member(object, source, parts);
+            }
+            if let Some(property) = node
+                .child_by_field_name("property")
+                .or_else(|| node.child_by_field_name("name"))
+            {
+                collect_jsx_member(property, source, parts);
+            }
+        }
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_jsx_member(child, source, parts);
+            }
         }
     }
 }
